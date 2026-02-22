@@ -125,12 +125,34 @@ def optimize_day(
     # Post-Pruning: falls noch zu viele für Bitmask-DP (2^n Speicher)
     if n > 20:
         report(0.21, f"{n} erreichbare Touren → reduziere auf 20 (DP-Limit)...")
-        indexed = list(enumerate(tours))
-        indexed.sort(
-            key=lambda x: x[1].euros / max(x[1].duration.total_seconds() / 3600, 0.25),
-            reverse=True,
-        )
-        keep = sorted([idx for idx, _ in indexed[:20]])
+
+        # Touren in 4-Stunden-Fenster einteilen für Zeitslot-Diversität
+        from collections import defaultdict
+        slots = defaultdict(list)
+        for idx, tour in enumerate(tours):
+            slot_key = tour.departure_dt.hour // 4  # 0-3, 4-7, 8-11, ...
+            slots[slot_key].append(idx)
+
+        # Pro Slot die besten nach €/h behalten, insgesamt max 20
+        keep = []
+        per_slot = max(20 // len(slots), 2)
+        for slot_key in sorted(slots):
+            slot_tours = slots[slot_key]
+            slot_tours.sort(
+                key=lambda i: tours[i].euros / max(tours[i].duration.total_seconds() / 3600, 0.25),
+                reverse=True,
+            )
+            keep.extend(slot_tours[:per_slot])
+
+        # Falls >20, nochmal global nach Effizienz trimmen
+        if len(keep) > 20:
+            keep.sort(
+                key=lambda i: tours[i].euros / max(tours[i].duration.total_seconds() / 3600, 0.25),
+                reverse=True,
+            )
+            keep = keep[:20]
+
+        keep = sorted(set(keep))
         tours = [tours[i] for i in keep]
         can_reach_from_home = [can_reach_from_home[i] for i in keep]
         n = len(tours)

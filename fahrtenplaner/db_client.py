@@ -5,6 +5,7 @@ from __future__ import annotations
 import time as time_mod
 from collections import deque
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 from typing import Optional
 
 import httpx
@@ -100,7 +101,7 @@ def find_connection(
                 "from": from_id,
                 "to": to_id,
                 "departure": departure,
-                "results": 3,
+                "results": 6,
                 "transfers": 3,
                 "national": "true",
                 "nationalExpress": "true",
@@ -118,11 +119,14 @@ def find_connection(
         if not journeys:
             return None
 
-        # Erste passende Verbindung zurückgeben
+        # Alle passenden Journeys parsen, beste (früheste Ankunft) zurückgeben
+        best = None
         for journey in journeys:
             conn = _parse_journey(journey)
             if conn and conn.legs:
-                return conn
+                if best is None or conn.arrival_time < best.arrival_time:
+                    best = conn
+        return best
 
     except Exception:
         pass
@@ -240,7 +244,15 @@ def _stations_match(a: str, b: str) -> bool:
             s = s.removesuffix(suffix)
         return s
 
-    return normalize(a) == normalize(b)
+    norm_a = normalize(a)
+    norm_b = normalize(b)
+    if norm_a == norm_b:
+        return True
+    # Enthaltensein prüfen (z.B. "Rostock" in "Rostock Hbf")
+    if norm_a in norm_b or norm_b in norm_a:
+        return True
+    # Fuzzy: >90% Ähnlichkeit
+    return SequenceMatcher(None, norm_a, norm_b).ratio() > 0.90
 
 
 def stations_match(a: str, b: str) -> bool:
@@ -277,13 +289,17 @@ def check_reachability_with_ids(
     """
     Prüft Erreichbarkeit mit bereits aufgelösten Station-IDs.
     Spart redundante lookup_station() Aufrufe.
+    Bei Fehlschlag: Retry mit +15 Min falls genug Zeitfenster.
     """
     conn = find_connection(from_id, to_id, earliest_departure.isoformat())
-
-    if not conn or not conn.arrival_time:
-        return None
-
-    if conn.arrival_time <= must_arrive_by:
+    if conn and conn.arrival_time and conn.arrival_time <= must_arrive_by:
         return conn
+
+    # Retry: +15 Min später, falls genug Zeitfenster
+    retry_dep = earliest_departure + timedelta(minutes=15)
+    if retry_dep < must_arrive_by - timedelta(minutes=30):
+        conn = find_connection(from_id, to_id, retry_dep.isoformat())
+        if conn and conn.arrival_time and conn.arrival_time <= must_arrive_by:
+            return conn
 
     return None
