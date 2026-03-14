@@ -1,245 +1,234 @@
-"""DB transport.rest API Client mit Caching und Rate-Limiting."""
+"""Google Maps Directions API Client for transit connections."""
 
 from __future__ import annotations
 
+import os
 import time as time_mod
-from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Optional
 
-import httpx
-import streamlit as st
+import googlemaps
 
 from models import Connection, Leg
 
 
-BASE_URL = "https://v6.db.transport.rest"
+# ---------------------------------------------------------------------------
+# Google Maps Client
+# ---------------------------------------------------------------------------
+
+_gmaps: Optional[googlemaps.Client] = None
+
+
+def _get_api_key() -> str:
+    """Read API key from st.secrets (preferred) or env var."""
+    try:
+        import streamlit as st
+        return st.secrets["GOOGLE_MAPS_API_KEY"]
+    except Exception:
+        pass
+    return os.environ.get("GOOGLE_MAPS_API_KEY", "")
+
+
+def _get_client() -> googlemaps.Client:
+    global _gmaps
+    if _gmaps is None:
+        key = _get_api_key()
+        if not key:
+            raise RuntimeError(
+                "GOOGLE_MAPS_API_KEY not set. "
+                "Add it to .streamlit/secrets.toml or export as env variable."
+            )
+        _gmaps = googlemaps.Client(key=key)
+    return _gmaps
 
 
 # ---------------------------------------------------------------------------
-# Rate Limiter (max 80 req/min)
+# Caches (simple dicts — no streamlit dependency needed)
 # ---------------------------------------------------------------------------
 
-class RateLimiter:
-    """Einfacher Token-Bucket Rate Limiter."""
-
-    def __init__(self, max_requests: int = 80, window_seconds: int = 60):
-        self.max_requests = max_requests
-        self.window = window_seconds
-        self._timestamps: deque[float] = deque()
-
-    def wait(self):
-        """Wartet falls nötig, bevor der nächste Request gesendet wird."""
-        now = time_mod.time()
-        # Alte Timestamps entfernen
-        while self._timestamps and self._timestamps[0] < now - self.window:
-            self._timestamps.popleft()
-        if len(self._timestamps) >= self.max_requests:
-            sleep_time = self._timestamps[0] + self.window - now + 0.1
-            if sleep_time > 0:
-                time_mod.sleep(sleep_time)
-        self._timestamps.append(time_mod.time())
-
-
-_rate_limiter = RateLimiter()
-_http_client = httpx.Client(timeout=15.0)
+_station_cache: dict[str, Optional[dict]] = {}
+_connection_cache: dict[str, Optional[Connection]] = {}
 
 
 # ---------------------------------------------------------------------------
-# Station Lookup (gecacht 24h – NUR Erfolge werden gecacht)
+# Station Lookup
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=86400, show_spinner=False)
 def lookup_station(name: str) -> Optional[dict]:
-    """
-    Sucht eine Station nach Name. Gibt {id, name, location} zurück.
+    """Resolve a station name to {id (place_id), name, location}."""
+    if name in _station_cache:
+        return _station_cache[name]
 
-    Bei API-Fehlern wird eine Exception geworfen (→ wird NICHT gecacht).
-    Nur echte "nicht gefunden"-Ergebnisse (API gibt 200 + leere Liste)
-    werden als None gecacht.
-    """
-    _rate_limiter.wait()
-    resp = _http_client.get(
-        f"{BASE_URL}/locations",
-        params={
-            "query": name,
-            "results": 1,
-            "stops": "true",
-            "addresses": "false",
-            "poi": "false",
-        },
-    )
-    resp.raise_for_status()  # HTTP-Fehler → Exception → nicht gecacht
-    data = resp.json()
-    if data and isinstance(data, list) and len(data) > 0:
-        station = data[0]
-        return {
-            "id": station.get("id"),
-            "name": station.get("name"),
-            "location": station.get("location"),
-        }
-    return None  # Echt nicht gefunden → wird gecacht
+    try:
+        client = _get_client()
+        # Try with "Bahnhof" first, fallback to just the name
+        for query in [f"{name} Bahnhof, Deutschland", f"{name}, Deutschland"]:
+            results = client.geocode(query, language="de")
+            if results:
+                break
+        if results:
+            place = results[0]
+            info = {
+                "id": place["place_id"],
+                "name": place.get("formatted_address", name),
+                "location": place["geometry"]["location"],
+            }
+            _station_cache[name] = info
+            return info
+    except Exception:
+        pass
+
+    _station_cache[name] = None
+    return None
+
+
+def batch_lookup_stations(names: list[str]) -> dict[str, Optional[dict]]:
+    """Resolve a list of station names to place IDs."""
+    result: dict[str, Optional[dict]] = {}
+    for name in names:
+        if name not in result:
+            result[name] = lookup_station(name)
+    return result
 
 
 # ---------------------------------------------------------------------------
-# Connection Search (gecacht 1h)
+# Connection Search
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def find_connection(
     from_id: str,
     to_id: str,
-    departure: str,  # ISO format string für Caching
+    departure: str,  # ISO format string
 ) -> Optional[Connection]:
-    """Sucht eine Zugverbindung von A nach B ab Zeitpunkt."""
-    _rate_limiter.wait()
-    try:
-        resp = _http_client.get(
-            f"{BASE_URL}/journeys",
-            params={
-                "from": from_id,
-                "to": to_id,
-                "departure": departure,
-                "results": 6,
-                "transfers": 3,
-                "national": "true",
-                "nationalExpress": "true",
-                "regional": "true",
-                "regionalExpress": "true",
-                "suburban": "true",
-                "bus": "true",
-                "tram": "true",
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    """Find a transit connection from A to B starting at departure time."""
+    cache_key = f"{from_id}|{to_id}|{departure}"
+    if cache_key in _connection_cache:
+        return _connection_cache[cache_key]
 
-        journeys = data.get("journeys", [])
-        if not journeys:
+    try:
+        client = _get_client()
+        dep_dt = datetime.fromisoformat(departure)
+
+        routes = client.directions(
+            origin=f"place_id:{from_id}",
+            destination=f"place_id:{to_id}",
+            mode="transit",
+            transit_mode=["rail", "train", "tram"],
+            departure_time=dep_dt,
+            alternatives=True,
+            language="de",
+        )
+
+        if not routes:
+            _connection_cache[cache_key] = None
             return None
 
-        # Alle passenden Journeys parsen, beste (früheste Ankunft) zurückgeben
-        best = None
-        for journey in journeys:
-            conn = _parse_journey(journey)
+        # Pick the route with earliest arrival
+        best: Optional[Connection] = None
+        for route in routes:
+            conn = _parse_route(route)
             if conn and conn.legs:
                 if best is None or conn.arrival_time < best.arrival_time:
                     best = conn
+
+        _connection_cache[cache_key] = best
         return best
 
     except Exception:
         pass
+
+    _connection_cache[cache_key] = None
     return None
 
 
-def _parse_journey(journey: dict) -> Optional[Connection]:
-    """Parst ein Journey-Objekt in eine Connection."""
-    legs_data = journey.get("legs", [])
-    legs: list[Leg] = []
+def _parse_route(route: dict) -> Optional[Connection]:
+    """Parse a Google Maps route into a Connection with transit Legs."""
+    legs_data = route.get("legs", [])
+    if not legs_data:
+        return None
 
-    for leg_data in legs_data:
-        try:
-            # Walking-Legs überspringen (haben kein 'line')
-            if leg_data.get("walking"):
+    parsed_legs: list[Leg] = []
+
+    for leg in legs_data:
+        for step in leg.get("steps", []):
+            if step.get("travel_mode") != "TRANSIT":
                 continue
 
-            dep_str = leg_data.get("departure")
-            arr_str = leg_data.get("arrival")
-            if not dep_str or not arr_str:
+            td = step.get("transit_details", {})
+            if not td:
                 continue
 
-            dep_time = datetime.fromisoformat(dep_str.replace("Z", "+00:00"))
-            arr_time = datetime.fromisoformat(arr_str.replace("Z", "+00:00"))
+            dep_ts = td.get("departure_time", {}).get("value")
+            arr_ts = td.get("arrival_time", {}).get("value")
+            if not dep_ts or not arr_ts:
+                continue
 
-            # Naiv machen (UTC-Offset ignorieren, da alles in DE)
-            dep_time = dep_time.replace(tzinfo=None)
-            arr_time = arr_time.replace(tzinfo=None)
+            dep_time = datetime.fromtimestamp(dep_ts)
+            arr_time = datetime.fromtimestamp(arr_ts)
 
-            line_data = leg_data.get("line", {})
-            line_name = line_data.get("name", "?")
+            line_info = td.get("line", {})
+            line_name = line_info.get("short_name", line_info.get("name", "?"))
 
-            # Schienenersatzverkehr erkennen
-            product = line_data.get("product", "")
-            product_name = line_data.get("productName", "")
-            remarks = leg_data.get("remarks", [])
+            dep_stop = td.get("departure_stop", {}).get("name", "?")
+            arr_stop = td.get("arrival_stop", {}).get("name", "?")
+
+            # Detect replacement bus services
+            vehicle = line_info.get("vehicle", {})
+            vehicle_type = vehicle.get("type", "")
             is_replacement = (
-                "bus" in product.lower() and "express" not in product.lower()
-                or "SEV" in line_name.upper()
-                or "ersatz" in product_name.lower()
-                or any("ersatz" in str(r.get("text", "")).lower() for r in remarks)
+                vehicle_type == "BUS"
+                and any(kw in line_name.upper() for kw in ["SEV", "ERSATZ"])
             )
 
-            origin = leg_data.get("origin", {})
-            destination = leg_data.get("destination", {})
-
-            legs.append(Leg(
-                departure_station=origin.get("name", "?"),
+            parsed_legs.append(Leg(
+                departure_station=dep_stop,
                 departure_time=dep_time,
-                arrival_station=destination.get("name", "?"),
+                arrival_station=arr_stop,
                 arrival_time=arr_time,
                 line=line_name,
                 is_replacement_service=is_replacement,
             ))
-        except Exception:
-            continue
 
-    if not legs:
+    if not parsed_legs:
         return None
-    return Connection(legs=legs)
+    return Connection(legs=parsed_legs)
 
 
 # ---------------------------------------------------------------------------
-# Erreichbarkeits-Check (Hauptfunktion für Optimizer)
+# Reachability Check (main interface for optimizer)
 # ---------------------------------------------------------------------------
 
-def check_reachability(
-    from_station: str,
-    to_station: str,
+def check_reachability_with_ids(
+    from_id: str,
+    to_id: str,
     earliest_departure: datetime,
     must_arrive_by: datetime,
-    progress_callback=None,
 ) -> Optional[Connection]:
-    """
-    Prüft ob man von from_station nach to_station kommt.
-    Gibt Connection zurück wenn rechtzeitig erreichbar, sonst None.
-    """
-    # Gleiche Station → kein Transfer nötig
-    if _stations_match(from_station, to_station):
-        return Connection(legs=[])
-
-    try:
-        from_info = lookup_station(from_station)
-        to_info = lookup_station(to_station)
-    except Exception:
-        return None
-
-    if not from_info or not to_info:
-        return None
-
-    conn = find_connection(
-        from_info["id"],
-        to_info["id"],
-        earliest_departure.isoformat(),
-    )
-
-    if not conn or not conn.arrival_time:
-        return None
-
-    # Prüfe ob rechtzeitig angekommen
-    if conn.arrival_time <= must_arrive_by:
+    """Check if a transit connection exists that arrives before the deadline."""
+    conn = find_connection(from_id, to_id, earliest_departure.isoformat())
+    if conn and conn.arrival_time and conn.arrival_time <= must_arrive_by:
         return conn
+
+    # Retry with +30 min if enough time window remains
+    retry_dep = earliest_departure + timedelta(minutes=30)
+    if retry_dep < must_arrive_by - timedelta(minutes=30):
+        conn = find_connection(from_id, to_id, retry_dep.isoformat())
+        if conn and conn.arrival_time and conn.arrival_time <= must_arrive_by:
+            return conn
 
     return None
 
 
+# ---------------------------------------------------------------------------
+# Station Name Matching (no API needed)
+# ---------------------------------------------------------------------------
+
 def _stations_match(a: str, b: str) -> bool:
-    """Prüft ob zwei Stationsnamen die gleiche Station meinen."""
+    """Check if two station names refer to the same station."""
     def normalize(s: str) -> str:
         s = s.lower().strip()
-        # Klammerzusätze entfernen
         s = s.split("(")[0].strip()
-        # Häufige Suffixe
         for suffix in [" hbf", " hauptbahnhof", " bf"]:
             s = s.removesuffix(suffix)
         return s
@@ -248,58 +237,11 @@ def _stations_match(a: str, b: str) -> bool:
     norm_b = normalize(b)
     if norm_a == norm_b:
         return True
-    # Enthaltensein prüfen (z.B. "Rostock" in "Rostock Hbf")
     if norm_a in norm_b or norm_b in norm_a:
         return True
-    # Fuzzy: >90% Ähnlichkeit
     return SequenceMatcher(None, norm_a, norm_b).ratio() > 0.90
 
 
 def stations_match(a: str, b: str) -> bool:
-    """Öffentliche Version: Prüft ob zwei Stationsnamen die gleiche Station meinen."""
+    """Public version: check if two station names refer to the same station."""
     return _stations_match(a, b)
-
-
-def batch_lookup_stations(names: list[str]) -> dict[str, Optional[dict]]:
-    """
-    Löst eine Liste von Stationsnamen in Station-IDs auf.
-    Retry bei API-Fehlern (bis zu 3 Versuche pro Station).
-    """
-    result: dict[str, Optional[dict]] = {}
-    for name in names:
-        if name not in result:
-            for attempt in range(3):
-                try:
-                    result[name] = lookup_station(name)
-                    break
-                except Exception:
-                    if attempt < 2:
-                        time_mod.sleep(1)
-                    else:
-                        result[name] = None
-    return result
-
-
-def check_reachability_with_ids(
-    from_id: str,
-    to_id: str,
-    earliest_departure: datetime,
-    must_arrive_by: datetime,
-) -> Optional[Connection]:
-    """
-    Prüft Erreichbarkeit mit bereits aufgelösten Station-IDs.
-    Spart redundante lookup_station() Aufrufe.
-    Bei Fehlschlag: Retry mit +15 Min falls genug Zeitfenster.
-    """
-    conn = find_connection(from_id, to_id, earliest_departure.isoformat())
-    if conn and conn.arrival_time and conn.arrival_time <= must_arrive_by:
-        return conn
-
-    # Retry: +15 Min später, falls genug Zeitfenster
-    retry_dep = earliest_departure + timedelta(minutes=15)
-    if retry_dep < must_arrive_by - timedelta(minutes=30):
-        conn = find_connection(from_id, to_id, retry_dep.isoformat())
-        if conn and conn.arrival_time and conn.arrival_time <= must_arrive_by:
-            return conn
-
-    return None

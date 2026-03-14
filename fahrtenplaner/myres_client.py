@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import json as json_mod
 import re
 from datetime import date, time, timedelta
 from pathlib import Path
 from typing import Optional
 
-import httpx
 from bs4 import BeautifulSoup
 import pandas as pd
 
@@ -144,8 +144,8 @@ def _row_to_tour(row, col_map: dict[str, str]) -> Optional[Tour]:
 class MyRESClient:
     """HTTP-Client für MyRES 3 (res.ivv-berlin.de).
 
-    Nutzt curl statt httpx, da die MyRES-WAF Python-HTTP-Clients
-    per TLS-Fingerprinting blockt.
+    Nutzt curl_cffi mit Chrome-TLS-Fingerprint, da die MyRES-WAF
+    Standard-Python-HTTP-Clients per TLS-Fingerprinting blockt.
     """
 
     BASE_URL = "https://res.ivv-berlin.de"
@@ -168,77 +168,23 @@ class MyRESClient:
     ]
 
     def __init__(self):
-        self._session: Optional[str] = None
+        from curl_cffi.requests import Session
+
+        self._session = Session(impersonate="chrome", verify=False)
         self._logged_in = False
         self._last_error = ""
 
-    def _curl(self, url: str, *, post_data: Optional[str] = None,
-              extra_headers: Optional[list[str]] = None) -> Optional[str]:
-        """Führt einen curl-Request aus und gibt den Response-Body zurück."""
-        import subprocess
-
-        cmd = ["curl", "-sk", "--globoff", "-L", "--max-time", "30"]
-
-        if self._session:
-            cmd += ["-b", f"rm3_session={self._session}"]
-
-        # Session-Cookie aus Response extrahieren
-        cmd += ["-c", "-"]
-
-        if post_data:
-            cmd += ["-d", post_data]
-
-        for h in (extra_headers or []):
-            cmd += ["-H", h]
-
-        cmd.append(url)
-
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
-
-        # Session-Cookie aktualisieren
-        for line in result.stdout.split("\n"):
-            if "rm3_session" in line:
-                parts = line.split()
-                if parts:
-                    self._session = parts[-1]
-
-        # Cookie-Jar Zeilen entfernen, nur HTTP-Body zurückgeben
-        lines = result.stdout.split("\n")
-        body_lines = []
-        in_body = False
-        for line in lines:
-            if line.startswith(("# ", "#HttpOnly_", "\t", ".")) and not in_body:
-                continue  # Cookie-Jar Zeile
-            if not in_body and not line.strip():
-                continue  # Leerzeile zwischen Cookie-Jar und Body
-            in_body = True
-            body_lines.append(line)
-
-        return "\n".join(body_lines)
-
     def login(self, username: str, password: str) -> bool:
         """Login bei MyRES 3."""
-        import subprocess
         try:
-            # Login via curl - Session-Cookie wird automatisch gesetzt
-            cmd = [
-                "curl", "-sk", "-c", "-", "-L",
-                "-d", f"benutzername={username}&passwort={password}",
+            resp = self._session.post(
                 f"{self.BASE_URL}/index.php?action=login",
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                data={"benutzername": username, "passwort": password},
+                timeout=30,
+            )
 
-            # Session extrahieren
-            for line in result.stdout.split("\n"):
-                if "rm3_session" in line:
-                    self._session = line.split()[-1]
+            html = resp.text.lower()
 
-            if not self._session:
-                self._last_error = "Keine Session erhalten"
-                return False
-
-            # Prüfe ob Login erfolgreich
-            html = result.stdout.lower()
             if "action=logout" in html or "abmelden" in html:
                 self._logged_in = True
                 return True
@@ -247,9 +193,14 @@ class MyRESClient:
                 self._last_error = "Falsche Zugangsdaten"
                 return False
 
-            # Session erhalten → vermutlich OK
-            self._logged_in = True
-            return True
+            # Session-Cookie vorhanden → vermutlich OK
+            cookies = {c.name: c.value for c in self._session.cookies}
+            if "rm3_session" in cookies:
+                self._logged_in = True
+                return True
+
+            self._last_error = "Keine Session erhalten"
+            return False
 
         except Exception as e:
             self._last_error = str(e)
@@ -266,9 +217,7 @@ class MyRESClient:
         date_to: date,
     ) -> list[Tour]:
         """Lädt freie Touren aus MyRES via DataTables JSON-API."""
-        import subprocess, json as json_mod
-
-        if not self._logged_in or not self._session:
+        if not self._logged_in:
             raise RuntimeError("Nicht eingeloggt.")
 
         # 1. Seite initialisieren (setzt Server-Session-State)
@@ -279,53 +228,45 @@ class MyRESClient:
             f"{self.BASE_URL}/index.php?action=freie-touren"
             f"&datum_von={date_from_str}&datum_bis={date_to_str}"
         )
-        subprocess.run(
-            ["curl", "-sk", "-b", f"rm3_session={self._session}", init_url],
-            capture_output=True, timeout=30,
-        )
+        self._session.get(init_url, timeout=30)
 
         # 2. DataTables AJAX-Request bauen
         state_ids = [self.STATE_IDS[s] for s in states if s in self.STATE_IDS]
 
-        params = [
-            "action=freie-touren",
-            "ajax=1",
-            "draw=1",
-            "start=0",
-            "length=500",  # Alle auf einmal
-            "heimatbahnhoefe=0",
-            f"datum_von={date_from_str}",
-            f"datum_bis={date_to_str}",
-            "order[0][column]=4",  # Sortiere nach Datum
-            "order[0][dir]=asc",
-        ]
-
-        for sid in state_ids:
-            params.append(f"bundeslaender[]={sid}")
+        params = {
+            "action": "freie-touren",
+            "ajax": "1",
+            "draw": "1",
+            "start": "0",
+            "length": "500",
+            "heimatbahnhoefe": "0",
+            "datum_von": date_from_str,
+            "datum_bis": date_to_str,
+            "order[0][column]": "4",
+            "order[0][dir]": "asc",
+            "bundeslaender[]": state_ids,
+        }
 
         for i, name in enumerate(self._DT_COLUMNS):
-            params.append(f"columns[{i}][data]={name}")
-            params.append(f"columns[{i}][name]={name}")
-            params.append(f"columns[{i}][searchable]=false")
-            params.append(f"columns[{i}][orderable]=true")
+            params[f"columns[{i}][data]"] = name
+            params[f"columns[{i}][name]"] = name
+            params[f"columns[{i}][searchable]"] = "false"
+            params[f"columns[{i}][orderable]"] = "true"
 
-        url = f"{self.BASE_URL}/index.php?" + "&".join(params)
-
-        result = subprocess.run(
-            [
-                "curl", "-sk", "--globoff",
-                "-b", f"rm3_session={self._session}",
-                "-H", "X-Requested-With: XMLHttpRequest",
-                "-H", "Accept: application/json, text/javascript, */*; q=0.01",
-                "-H", f"Referer: {init_url}",
-                url,
-            ],
-            capture_output=True, text=True, timeout=30,
+        resp = self._session.get(
+            f"{self.BASE_URL}/index.php",
+            params=params,
+            headers={
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Referer": init_url,
+            },
+            timeout=30,
         )
 
         # 3. JSON parsen
         try:
-            data = json_mod.loads(result.stdout.strip())
+            data = resp.json()
         except (json_mod.JSONDecodeError, ValueError):
             self._last_error = "Ungültige Antwort vom Server"
             return []
@@ -366,4 +307,4 @@ class MyRESClient:
             return None
 
     def close(self):
-        pass
+        self._session.close()

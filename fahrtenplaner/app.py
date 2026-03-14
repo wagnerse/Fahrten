@@ -334,11 +334,20 @@ with tab_optimize:
     else:
         st.info(f"Route: **{home_station}** → Touren → **{dest_station}**")
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         dep_time = st.time_input("Früheste Abfahrt", value=time(4, 0))
     with col2:
         ret_time = st.time_input("Späteste Rückkehr", value=time(23, 59))
+    with col3:
+        max_gap_minutes = st.number_input(
+            "Max. Pause zwischen Touren (Min.)",
+            min_value=10,
+            max_value=1440,
+            value=60,
+            step=10,
+            help="Maximale Zeit zwischen Ende einer Tour und Beginn der nächsten (inkl. Leerfahrt)",
+        )
 
     # Optimierung starten
     st.divider()
@@ -369,6 +378,7 @@ with tab_optimize:
                 earliest_departure=earliest,
                 latest_return=latest,
                 progress_callback=progress_cb,
+                max_transfer_gap_hours=max_gap_minutes / 60,
             )
 
             progress_bar.empty()

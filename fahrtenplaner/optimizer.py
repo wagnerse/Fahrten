@@ -28,6 +28,7 @@ def optimize_day(
     earliest_departure: datetime,
     latest_return: datetime,
     progress_callback: Optional[Callable[[float, str], None]] = None,
+    max_transfer_gap_hours: float = MAX_TRANSFER_GAP_HOURS,
 ) -> DayPlan:
     """
     Berechnet die optimale Tourenkette für einen Tag.
@@ -39,6 +40,7 @@ def optimize_day(
         earliest_departure: Früheste Abfahrt von zuhause
         latest_return: Späteste Rückkehr am Zielbahnhof
         progress_callback: Optional (progress: 0-1, message: str)
+        max_transfer_gap_hours: Maximale Wartezeit zwischen Touren in Stunden
     """
     n = len(tours)
 
@@ -180,7 +182,7 @@ def optimize_day(
                 continue
 
             # Zu lange Wartezeit
-            if gap_minutes > MAX_TRANSFER_GAP_HOURS * 60:
+            if gap_minutes > max_transfer_gap_hours * 60:
                 skipped_time += 1
                 continue
 
