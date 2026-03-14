@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit_authenticator as stauth
 
 # Modell-Importe
 sys.path.insert(0, str(Path(__file__).parent))
@@ -52,6 +53,42 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
+# Auth Gate (nur aktiv wenn [auth] Block in secrets.toml vorhanden)
+# ---------------------------------------------------------------------------
+
+def _to_plain(obj):
+    """Convert st.secrets proxy objects to plain Python dicts/lists/scalars."""
+    try:
+        # dict-like
+        return {k: _to_plain(v) for k, v in obj.items()}
+    except AttributeError:
+        pass
+    if isinstance(obj, (list, tuple)):
+        return [_to_plain(v) for v in obj]
+    return obj
+
+auth_config = st.secrets.get("auth", None)
+if auth_config:
+    authenticator = stauth.Authenticate(
+        _to_plain(auth_config["credentials"]),
+        str(auth_config["cookie_name"]),
+        str(auth_config["cookie_key"]),
+        float(auth_config["cookie_expiry_days"]),
+    )
+    authenticator.login(fields={
+        'Form name': 'Anmeldung',
+        'Username': 'Benutzername',
+        'Password': 'Passwort',
+        'Login': 'Anmelden',
+        'Captcha': 'Captcha',
+    })
+    if not st.session_state.get("authentication_status"):
+        if st.session_state.get("authentication_status") is False:
+            st.error("Falscher Benutzername oder Passwort")
+        st.stop()
+    authenticator.logout("Abmelden", "sidebar")
+
+# ---------------------------------------------------------------------------
 # Session State
 # ---------------------------------------------------------------------------
 
@@ -59,16 +96,22 @@ if "tours" not in st.session_state:
     st.session_state.tours = []
 if "myres_client" not in st.session_state:
     st.session_state.myres_client = None
+myres_defaults = st.secrets.get("myres", {})
+if "myres_username" not in st.session_state:
+    st.session_state.myres_username = str(myres_defaults.get("username", ""))
+if "myres_password" not in st.session_state:
+    st.session_state.myres_password = str(myres_defaults.get("password", ""))
 
 
 # ---------------------------------------------------------------------------
 # Sidebar – MyRES Login & Touren laden
 # ---------------------------------------------------------------------------
 
-st.sidebar.title("MyRES 3")
-
-username = st.sidebar.text_input("Username")
-password = st.sidebar.text_input("Passwort", type="password")
+with st.sidebar.expander("MyRES Zugangsdaten"):
+    username = st.text_input("Username", value=st.session_state.myres_username, key="myres_user_input")
+    password = st.text_input("Passwort", value=st.session_state.myres_password, type="password", key="myres_pw_input")
+    st.session_state.myres_username = username
+    st.session_state.myres_password = password
 
 st.sidebar.markdown("### Filter")
 states = st.sidebar.multiselect(
@@ -98,7 +141,7 @@ else:
 
 if st.sidebar.button("Touren laden", type="primary", use_container_width=True):
     if not username or not password:
-        st.sidebar.error("Username und Passwort eingeben!")
+        st.sidebar.error("Zugangsdaten fehlen – klicke ⚙️ oben")
     else:
         with st.sidebar.status("Verbinde mit MyRES...") as status:
             client = MyRESClient()
