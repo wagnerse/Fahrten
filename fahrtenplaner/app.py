@@ -447,5 +447,34 @@ with tab_optimize:
 # ---------------------------------------------------------------------------
 
 st.sidebar.divider()
+with st.sidebar.expander("Debug / Diagnostik"):
+    key = st.secrets.get("GOOGLE_MAPS_API_KEY", "")
+    st.text(f"API Key: {'✅ loaded (' + str(len(key)) + ' chars)' if key else '❌ missing'}")
+
+    if st.button("Google Maps testen"):
+        try:
+            from db_client import lookup_station
+            result = lookup_station("Prenzlau")
+            if result:
+                st.success(f"OK: {result['name']}")
+            else:
+                st.error("Station nicht gefunden (None returned)")
+        except Exception as e:
+            st.exception(e)
+
+    if st.button("MyRES erreichbar?"):
+        try:
+            from curl_cffi.requests import Session
+            s = Session(impersonate="chrome", verify=False)
+            resp = s.get("https://res.ivv-berlin.de", timeout=15)
+            st.success(f"OK: HTTP {resp.status_code}")
+            s.close()
+        except Exception as e:
+            st.exception(e)
+
+    import platform
+    st.text(f"Python: {platform.python_version()}")
+    st.text(f"Platform: {platform.platform()}")
+
 st.sidebar.caption("Erhebungsfahrten-Planer v1.0")
 st.sidebar.caption("DB-API: v6.db.transport.rest (kostenlos)")

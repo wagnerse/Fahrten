@@ -8,10 +8,14 @@ from datetime import date, time, timedelta
 from pathlib import Path
 from typing import Optional
 
+import logging
+
 from bs4 import BeautifulSoup
 import pandas as pd
 
 from models import Tour
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +207,7 @@ class MyRESClient:
             return False
 
         except Exception as e:
+            logger.error("MyRES login failed: %s: %s", type(e).__name__, e)
             self._last_error = str(e)
             return False
 
@@ -267,7 +272,8 @@ class MyRESClient:
         # 3. JSON parsen
         try:
             data = resp.json()
-        except (json_mod.JSONDecodeError, ValueError):
+        except (json_mod.JSONDecodeError, ValueError) as e:
+            logger.error("MyRES fetch_free_tours JSON parse failed: %s: %s", type(e).__name__, e)
             self._last_error = "Ungültige Antwort vom Server"
             return []
 

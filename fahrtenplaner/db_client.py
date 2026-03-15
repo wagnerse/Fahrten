@@ -8,9 +8,13 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Optional
 
+import logging
+
 import googlemaps
 
 from models import Connection, Leg
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +80,8 @@ def lookup_station(name: str) -> Optional[dict]:
             }
             _station_cache[name] = info
             return info
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("lookup_station(%s) failed: %s", name, e)
 
     _station_cache[name] = None
     return None
@@ -135,8 +139,8 @@ def find_connection(
         _connection_cache[cache_key] = best
         return best
 
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("find_connection(%s → %s) failed: %s", from_id, to_id, e)
 
     _connection_cache[cache_key] = None
     return None
