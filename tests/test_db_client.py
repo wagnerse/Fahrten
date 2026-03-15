@@ -215,3 +215,66 @@ class TestStationsMatch:
     def test_different_stations(self):
         from db_client import stations_match
         assert not stations_match("Berlin", "München")
+
+
+class TestCrossBorderStations:
+    """Regression: Stations in Poland/Czech Republic must be geocodable.
+
+    Bug: lookup_station("Szczecin Glowny") appended ", Deutschland" to the
+    geocode query. Since Szczecin is in Poland, Google returned a wrong
+    German location (near Mühlhausen/Thuringia), causing a 5h43 detour
+    via Berlin and Erfurt instead of a direct ~1.5h route.
+    """
+
+    def test_szczecin_glowny_query_not_restricted_to_germany(self):
+        """Geocode queries for Szczecin Glowny must not contain 'Deutschland'."""
+        mock_client = MagicMock()
+        mock_client.geocode.return_value = [{
+            "place_id": "ChIJ_szczecin_glowny",
+            "formatted_address": "Szczecin Główny, Poland",
+            "geometry": {"location": {"lat": 53.4285, "lng": 14.5528}},
+        }]
+
+        with patch("db_client._gmaps", mock_client):
+            from db_client import lookup_station
+            result = lookup_station("Szczecin Glowny")
+
+        assert result is not None
+        assert result["id"] == "ChIJ_szczecin_glowny"
+
+        # Verify no query contained "Deutschland"
+        for call in mock_client.geocode.call_args_list:
+            query = call[0][0] if call[0] else call[1].get("address", "")
+            assert "Deutschland" not in query, \
+                f"Geocode query should not restrict to Deutschland: {query}"
+
+    def test_swinoujscie_query_not_restricted_to_germany(self):
+        """Swinoujscie Centrum is also in Poland — same fix needed."""
+        mock_client = MagicMock()
+        mock_client.geocode.return_value = [{
+            "place_id": "ChIJ_swinoujscie",
+            "formatted_address": "Świnoujście, Poland",
+            "geometry": {"location": {"lat": 53.9108, "lng": 14.2471}},
+        }]
+
+        with patch("db_client._gmaps", mock_client):
+            from db_client import lookup_station
+            result = lookup_station("Swinoujscie Centrum")
+
+        assert result is not None
+        for call in mock_client.geocode.call_args_list:
+            query = call[0][0] if call[0] else call[1].get("address", "")
+            assert "Deutschland" not in query, \
+                f"Geocode query should not restrict to Deutschland: {query}"
+
+    def test_german_station_still_resolves(self):
+        """German stations must still resolve correctly without Deutschland."""
+        mock_client = MagicMock()
+        mock_client.geocode.return_value = GMAPS_GEOCODE_PRENZLAU
+
+        with patch("db_client._gmaps", mock_client):
+            from db_client import lookup_station
+            result = lookup_station("Prenzlau")
+
+        assert result is not None
+        assert "Prenzlau" in result["name"]

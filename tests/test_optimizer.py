@@ -593,6 +593,87 @@ class TestPrenzlauRealScenario:
         assert 705877 not in selected_nrs  # can't return from Stralsund
 
 
+class TestAnreiseCrossBorderRegression:
+    """Regression: Anreise to cross-border stations must use reasonable routes.
+
+    Bug: Prenzlau → Szczecin Glowny was routed via Berlin-Erfurt-Mühlhausen
+    (5h43, 3 transfers) because geocoding restricted "Szczecin Glowny" to
+    Deutschland, resolving it to a wrong location in Thuringia.
+
+    Fix: Geocoding must allow Polish/Czech stations to resolve correctly.
+    The Anreise from Prenzlau to Szczecin should be ~1.5h direct.
+    """
+
+    def test_prenzlau_to_szczecin_anreise_is_direct(self):
+        """Prenzlau → Szczecin Glowny is ~80km; Anreise must be <3h."""
+        tour = make_tour(
+            705302, "19:26", "Szczecin Glowny", "21:21", "Angermünde", 36.42,
+        )
+
+        # Realistic direct connection: ~1.5h (Prenzlau → Szczecin via RE66)
+        anreise = make_leg_conn(
+            "Prenzlau", "2026-04-01T17:30",
+            "Szczecin Glowny", "2026-04-01T19:00", "RE66",
+        )
+        rueckreise = make_leg_conn(
+            "Angermünde", "2026-04-01T21:30",
+            "Prenzlau", "2026-04-01T21:55", "RE3",
+        )
+
+        plan = run_optimizer(
+            [tour],
+            home="Prenzlau",
+            dest="Prenzlau",
+            earliest="04:00",
+            latest="23:59",
+            home_to_tour={0: anreise},
+            tour_to_dest={0: rueckreise},
+        )
+
+        assert plan.num_tours == 1
+        assert plan.tours[0].tour_nr == 705302
+
+        # Verify Anreise is present and reasonable
+        anreise_links = [l for l in plan.chain if l.type == "anreise"]
+        assert len(anreise_links) == 1
+        conn = anreise_links[0].connection
+        assert conn.duration < timedelta(hours=3), \
+            f"Anreise Prenzlau→Szczecin should be <3h, got {conn.duration}"
+        assert conn.transfers <= 1, \
+            f"Prenzlau→Szczecin should have ≤1 transfer, got {conn.transfers}"
+
+    def test_anreise_via_erfurt_is_wrong(self):
+        """Anreise via Erfurt (5h43, 3 transfers) must NOT be the result.
+
+        This is the exact bug observed: Google Maps geocoded Szczecin Glowny
+        to a German location, producing a route through Berlin and Erfurt.
+        """
+        tour = make_tour(
+            705302, "19:26", "Szczecin Glowny", "21:21", "Angermünde", 36.42,
+        )
+
+        # The WRONG route observed in the bug (5h43 via Erfurt)
+        wrong_anreise = Connection(legs=[
+            Leg("Prenzlau", datetime(2026, 4, 1, 5, 2),
+                "Südkreuz", datetime(2026, 4, 1, 6, 47), "RE3"),
+            Leg("Südkreuz", datetime(2026, 4, 1, 7, 14),
+                "Erfurt", datetime(2026, 4, 1, 8, 48), "ICE 595"),
+            Leg("Erfurt", datetime(2026, 4, 1, 9, 7),
+                "Mühlhausen", datetime(2026, 4, 1, 9, 58), "RE11"),
+            Leg("Mühlhausen, Bahnhof", datetime(2026, 4, 1, 10, 30),
+                "Oberdorla Bahnhof - Vogtei", datetime(2026, 4, 1, 10, 45), "160"),
+        ])
+
+        # This route is clearly wrong — it ends in Thuringia, not Szczecin
+        assert wrong_anreise.duration > timedelta(hours=5), \
+            "The buggy route was 5h43 — this test documents the wrong behavior"
+        assert wrong_anreise.transfers == 3, \
+            "The buggy route had 3 transfers"
+        # The route doesn't even arrive at Szczecin!
+        assert wrong_anreise.legs[-1].arrival_station != "Szczecin Glowny", \
+            "Bug: route ended at Oberdorla, not Szczecin Glowny"
+
+
 class TestScaleBeyond20Tours:
     """DAG-DP must handle >20 tours without pruning and find the optimal chain."""
 

@@ -66,9 +66,11 @@ def lookup_station(name: str) -> Optional[dict]:
 
     try:
         client = _get_client()
-        # Try with "Bahnhof" first, fallback to just the name
-        for query in [f"{name} Bahnhof, Deutschland", f"{name}, Deutschland"]:
-            results = client.geocode(query, language="de")
+        # Try with "Bahnhof" first, fallback to just the name.
+        # Use region="de" bias instead of appending "Deutschland" to avoid
+        # mis-geocoding cross-border stations (Szczecin, Swinoujscie, etc.)
+        for query in [f"{name} Bahnhof", f"{name}"]:
+            results = client.geocode(query, language="de", region="de")
             if results:
                 break
         if results:
