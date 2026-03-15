@@ -9,4 +9,5 @@ dist/
 build/
 .claude/
 .tools/
+.streamlit/secrets.toml
 .idea/
