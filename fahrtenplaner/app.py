@@ -472,6 +472,21 @@ with st.sidebar.expander("Debug / Diagnostik"):
         except Exception as e:
             st.exception(e)
 
+    if st.button("MyRES IP-Test (WAF check)"):
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["curl", "-s", "-o", "/dev/null", "-w",
+                 "%{http_code} %{time_connect}s connect, %{time_total}s total",
+                 "--connect-timeout", "10", "-k",
+                 "-H", "Host: res.ivv-berlin.de",
+                 "https://193.111.43.2/"],
+                capture_output=True, text=True, timeout=15
+            )
+            st.code(f"stdout: {result.stdout}\nstderr: {result.stderr}")
+        except Exception as e:
+            st.exception(e)
+
     import platform
     st.text(f"Python: {platform.python_version()}")
     st.text(f"Platform: {platform.platform()}")
