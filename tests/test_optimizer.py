@@ -591,3 +591,41 @@ class TestPrenzlauRealScenario:
 
         selected_nrs = {t.tour_nr for t in plan.tours}
         assert 705877 not in selected_nrs  # can't return from Stralsund
+
+
+class TestScaleBeyond20Tours:
+    """DAG-DP must handle >20 tours without pruning and find the optimal chain."""
+
+    def test_25_tours_finds_optimal_chain(self):
+        """25 tours available, 3 form the optimal chain — no heuristic pruning."""
+        # Generate 25 tours at station X, each 30 min, staggered every 40 min
+        tours = []
+        for i in range(25):
+            h, m = divmod(6 * 60 + i * 40, 60)
+            dep = f"{h:02d}:{m:02d}"
+            h2, m2 = divmod(6 * 60 + i * 40 + 30, 60)
+            arr = f"{h2:02d}:{m2:02d}"
+            tours.append(make_tour(1000 + i, dep, "X", arr, "X", euros=5.0))
+
+        # Make 3 specific tours much more valuable (spread across the day)
+        tours[2] = make_tour(1002, "07:20", "X", "07:50", "X", euros=50.0)   # idx 2
+        tours[12] = make_tour(1012, "14:00", "X", "14:30", "X", euros=60.0)  # idx 12
+        tours[22] = make_tour(1022, "20:40", "X", "21:10", "X", euros=70.0)  # idx 22
+
+        # All reachable from home (same station), all can return
+        home_to_tour = {i: EMPTY_CONN for i in range(25)}
+        tour_to_dest = {i: EMPTY_CONN for i in range(25)}
+
+        plan = run_optimizer(
+            tours,
+            home="X",
+            dest="X",
+            home_to_tour=home_to_tour,
+            tour_to_dest=tour_to_dest,
+            max_gap_hours=12.0,
+        )
+
+        # All 25 tours are chainable (same station, 10-min gaps) → all selected
+        # 22 × 5€ + 50€ + 60€ + 70€ = 290€
+        assert plan.num_tours == 25
+        assert plan.total_euros == pytest.approx(290.0)

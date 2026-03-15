@@ -1,4 +1,4 @@
-"""Tourenoptimierung mit Bitmask-DP für maximalen Verdienst."""
+"""Tourenoptimierung mit DAG-Longest-Path-DP für maximalen Verdienst."""
 
 from __future__ import annotations
 
@@ -124,40 +124,11 @@ def optimize_day(
     can_reach_from_home = [can_reach_from_home[i] for i in reachable]
     n = len(tours)
 
-    # Post-Pruning: falls noch zu viele für Bitmask-DP (2^n Speicher)
-    if n > 20:
-        report(0.21, f"{n} erreichbare Touren → reduziere auf 20 (DP-Limit)...")
-
-        # Touren in 4-Stunden-Fenster einteilen für Zeitslot-Diversität
-        from collections import defaultdict
-        slots = defaultdict(list)
-        for idx, tour in enumerate(tours):
-            slot_key = tour.departure_dt.hour // 4  # 0-3, 4-7, 8-11, ...
-            slots[slot_key].append(idx)
-
-        # Pro Slot die besten nach €/h behalten, insgesamt max 20
-        keep = []
-        per_slot = max(20 // len(slots), 2)
-        for slot_key in sorted(slots):
-            slot_tours = slots[slot_key]
-            slot_tours.sort(
-                key=lambda i: tours[i].euros / max(tours[i].duration.total_seconds() / 3600, 0.25),
-                reverse=True,
-            )
-            keep.extend(slot_tours[:per_slot])
-
-        # Falls >20, nochmal global nach Effizienz trimmen
-        if len(keep) > 20:
-            keep.sort(
-                key=lambda i: tours[i].euros / max(tours[i].duration.total_seconds() / 3600, 0.25),
-                reverse=True,
-            )
-            keep = keep[:20]
-
-        keep = sorted(set(keep))
-        tours = [tours[i] for i in keep]
-        can_reach_from_home = [can_reach_from_home[i] for i in keep]
-        n = len(tours)
+    # Touren nach Abfahrtszeit sortieren → DAG-Eigenschaft sicherstellen
+    # (jede gültige Kante zeigt nur vorwärts im sortierten Array)
+    sorted_order = sorted(range(n), key=lambda i: tours[i].departure_dt)
+    tours = [tours[i] for i in sorted_order]
+    can_reach_from_home = [can_reach_from_home[i] for i in sorted_order]
 
     # ========== Phase 2/3: Tour-zu-Tour Transfers (mit Pruning) ==========
     edge: list[list[Optional[Connection]]] = [[None] * n for _ in range(n)]
@@ -167,9 +138,7 @@ def optimize_day(
     transfer_pairs: list[tuple[int, int]] = []
 
     for i in range(n):
-        for j in range(n):
-            if i == j:
-                continue
+        for j in range(i + 1, n):
             tour_i = tours[i]
             tour_j = tours[j]
 
@@ -181,10 +150,10 @@ def optimize_day(
                 skipped_time += 1
                 continue
 
-            # Zu lange Wartezeit
+            # Zu lange Wartezeit → alle weiteren j auch (sortiert nach Abfahrt)
             if gap_minutes > max_transfer_gap_hours * 60:
                 skipped_time += 1
-                continue
+                break
 
             # Gleiche Station → kein API-Call nötig
             if stations_match(tour_i.arrival_station, tour_j.departure_station):
@@ -195,7 +164,7 @@ def optimize_day(
             transfer_pairs.append((i, j))
 
     api_needed = len(transfer_pairs)
-    total_possible = n * (n - 1)
+    total_possible = n * (n - 1) // 2
     report(
         0.22,
         f"Phase 2/3: {skipped_time} zeitlich unmöglich, "
@@ -263,79 +232,53 @@ def optimize_day(
         f"{skipped_time + skipped_same} übersprungen",
     )
 
-    # ========== Bitmask-DP ==========
-    report(0.78, "Optimiere Tourenkette (Bitmask-DP)...")
+    # ========== DAG-Longest-Path-DP ==========
+    report(0.78, "Optimiere Tourenkette (DAG-DP)...")
 
-    FULL = (1 << n) - 1
     NEG_INF = float("-inf")
 
-    # dp[mask][last] = maximaler Verdienst mit genau diesen Touren,
-    # wobei 'last' die letzte Tour ist
-    dp = [[NEG_INF] * n for _ in range(FULL + 1)]
-    parent = [[-1] * n for _ in range(FULL + 1)]
+    # dp[j] = maximaler Verdienst einer Kette, die bei Tour j endet
+    dp = [NEG_INF] * n
+    # pred[j] = Vorgänger-Tour in der optimalen Kette (-1 = kein Vorgänger)
+    pred = [-1] * n
 
-    # Initialisierung: Starte mit einzelner Tour (erreichbar von home)
+    # Initialisierung: Touren, die direkt von zuhause erreichbar sind
     for i in range(n):
         if can_reach_from_home[i] is not None:
-            dp[1 << i][i] = tours[i].euros
+            dp[i] = tours[i].euros
 
-    # DP-Transition
-    for mask in range(1, FULL + 1):
-        for last in range(n):
-            if dp[mask][last] == NEG_INF:
-                continue
-            if not (mask & (1 << last)):
-                continue
-
-            for nxt in range(n):
-                if mask & (1 << nxt):
-                    continue  # Schon besucht
-                if edge[last][nxt] is None:
-                    continue  # Nicht erreichbar
-
-                new_mask = mask | (1 << nxt)
-                new_val = dp[mask][last] + tours[nxt].euros
-
-                if new_val > dp[new_mask][nxt]:
-                    dp[new_mask][nxt] = new_val
-                    parent[new_mask][nxt] = last
+    # DP-Transition: für jede Tour j, prüfe alle möglichen Vorgänger i < j
+    for j in range(n):
+        for i in range(j):
+            if edge[i][j] is not None and dp[i] != NEG_INF:
+                new_val = dp[i] + tours[j].euros
+                if new_val > dp[j]:
+                    dp[j] = new_val
+                    pred[j] = i
 
     report(0.88, "Beste Route wird rekonstruiert...")
 
     # ========== Beste Kette finden ==========
 
     best_val = NEG_INF
-    best_mask = 0
-    best_last = -1
+    best_j = -1
 
-    for mask in range(1, FULL + 1):
-        for last in range(n):
-            if dp[mask][last] == NEG_INF:
-                continue
-            if can_reach_to_dest[last] is None:
-                continue
-            if dp[mask][last] > best_val:
-                best_val = dp[mask][last]
-                best_mask = mask
-                best_last = last
+    for j in range(n):
+        if dp[j] != NEG_INF and can_reach_to_dest[j] is not None:
+            if dp[j] > best_val:
+                best_val = dp[j]
+                best_j = j
 
-    if best_last == -1:
+    if best_j == -1:
         report(1.0, "Keine gültige Tourenkette gefunden.")
         return DayPlan()
 
     # Kette rückwärts rekonstruieren
     chain_indices = []
-    mask = best_mask
-    cur = best_last
-
+    cur = best_j
     while cur != -1:
         chain_indices.append(cur)
-        prev = parent[mask][cur]
-        if prev == -1:
-            break
-        mask ^= (1 << cur)
-        cur = prev
-
+        cur = pred[cur]
     chain_indices.reverse()
 
     report(0.93, "Tagesplan wird zusammengestellt...")
@@ -415,14 +358,3 @@ def _check_transfer_warning(
         warnings.append(f"Knapper Umstieg! Nur {int(gap_minutes)} Min.")
 
     return " | ".join(warnings) if warnings else None
-
-
-def _prune_tours(tours: list[Tour], home_station: str, max_tours: int) -> list[Tour]:
-    """Reduziert Touren auf max_tours basierend auf Euro-Wert und Erreichbarkeit."""
-    # Sortiere nach Euro/Stunde (Effizienz)
-    def efficiency(t: Tour) -> float:
-        hours = t.duration.total_seconds() / 3600
-        return t.euros / max(hours, 0.25)
-
-    sorted_tours = sorted(tours, key=efficiency, reverse=True)
-    return sorted_tours[:max_tours]
