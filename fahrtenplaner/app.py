@@ -34,30 +34,22 @@ st.set_page_config(
     page_title="Erhebungsfahrten-Planer",
     page_icon="🚂",
     layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={"Get help": None, "Report a bug": None, "About": None},
 )
 
 # ---------------------------------------------------------------------------
-# Styles
+# Styles — Bahnamt edition
 # ---------------------------------------------------------------------------
 
-st.markdown("""
-<style>
-    .tour-mi { background-color: #D6E4F0; padding: 2px 8px; border-radius: 4px; }
-    .tour-do { background-color: #E2EFDA; padding: 2px 8px; border-radius: 4px; }
-    .tour-fr { background-color: #FCE4D6; padding: 2px 8px; border-radius: 4px; }
-    .warning-box {
-        background-color: #FFF3CD; border: 1px solid #FFC107;
-        padding: 8px 12px; border-radius: 6px; margin: 4px 0;
-    }
-    .sev-box {
-        background-color: #F8D7DA; border: 1px solid #DC3545;
-        padding: 8px 12px; border-radius: 6px; margin: 4px 0;
-    }
-    .result-metric {
-        font-size: 2rem; font-weight: bold; color: #1f77b4;
-    }
-</style>
-""", unsafe_allow_html=True)
+@st.cache_data
+def _load_stylesheet() -> str:
+    css_path = Path(__file__).parent / "assets" / "style.css"
+    return css_path.read_text(encoding="utf-8") if css_path.exists() else ""
+
+_css = _load_stylesheet()
+if _css:
+    st.markdown(f"<style>{_css}</style>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Auth Gate (nur aktiv wenn [auth] Block in secrets.toml vorhanden)
@@ -188,8 +180,21 @@ if tours:
 # Hauptbereich
 # ---------------------------------------------------------------------------
 
-st.title("Erhebungsfahrten-Planer")
-st.caption("Optimale Tourenketten für DB-Zugzählungen berechnen")
+st.markdown(
+    f"""
+    <div class="studio-hero">
+        <div class="eyebrow">
+            <span class="db-mark">DB</span>
+            <span>Zugzählung · Erhebungsfahrten</span>
+            <span class="ver">v{current_version()}</span>
+        </div>
+        <h1 class="title">Fahrten<span class="accent">planer</span></h1>
+        <p class="subtitle">Optimale Tourenketten für die DB-Zugzählung. Anreise,
+        Touren, Transfers und Rückreise als ein durchgehender Tagesplan.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 if not tours:
     st.info(
@@ -259,24 +264,29 @@ def _render_result(plan: DayPlan):
 
 
 def _render_tour_block(link: ChainLink):
-    """Rendert einen Tour-Block."""
+    """Rendert einen Tour-Block im Bahnamt-Stil."""
     tour = link.tour
     if not tour:
         return
 
-    day_colors = {"Mi": "#D6E4F0", "Do": "#E2EFDA", "Fr": "#FCE4D6"}
-    bg = day_colors.get(tour.day_name, "#F0F0F0")
+    day_class = {"Mi": "day-mi", "Do": "day-do", "Fr": "day-fr"}.get(tour.day_name, "")
+    price = f"{tour.euros:.2f}".replace(".", ",")
 
     st.markdown(
         f"""
-        <div style="background-color: {bg}; color: #1a1a1a; padding: 12px 16px;
-                    border-radius: 8px; margin: 8px 0; border-left: 4px solid #1f77b4;">
-            <strong>Tour {tour.tour_nr}</strong> — <strong>{tour.euros:.2f} €</strong>
-            <br>
-            {tour.departure_time:%H:%M} {tour.departure_station}
-            → {tour.arrival_time:%H:%M} {tour.arrival_station}
-            <br>
-            <small style="color: #444;">{tour.num_rides} Fahrt(en) · {tour.duration_str} · {tour.points} Pkt</small>
+        <div class="tour-card {day_class}">
+          <div class="head">
+            <span class="nr">Tour № {tour.tour_nr} · {tour.day_name}</span>
+            <span class="price">{price}&nbsp;€</span>
+          </div>
+          <div class="route">
+            <span class="time">{tour.departure_time:%H:%M}</span>
+            <span class="station">&nbsp;{tour.departure_station}</span>
+            <span class="arrow">→</span>
+            <span class="time">{tour.arrival_time:%H:%M}</span>
+            <span class="station">&nbsp;{tour.arrival_station}</span>
+          </div>
+          <div class="meta">{tour.num_rides} Fahrt(en) · {tour.duration_str} h · {tour.points} Pkt</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -533,5 +543,19 @@ with st.sidebar.expander("Debug / Diagnostik"):
     st.text(f"Python: {platform.python_version()}")
     st.text(f"Platform: {platform.platform()}")
 
-st.sidebar.caption("Erhebungsfahrten-Planer v1.0")
-st.sidebar.caption("DB-API: v6.db.transport.rest (kostenlos)")
+st.sidebar.markdown(
+    f"""
+    <div style="font-family:'Onest',sans-serif;font-size:0.78rem;
+                color:#8E8C87;margin-top:0.6rem;
+                border-top:1px solid #EFEEEA;padding-top:0.7rem;
+                line-height:1.5;">
+        Fahrtenplaner
+        <span style="font-family:'JetBrains Mono',monospace;font-size:0.7rem;
+                     color:#0E0E0C;background:#F5F4F1;padding:0.05em 0.4em;
+                     border-radius:4px;margin-left:0.3rem;">v{current_version()}</span>
+        <br>
+        <span style="font-size:0.72rem;">MyRES · Google Maps</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)

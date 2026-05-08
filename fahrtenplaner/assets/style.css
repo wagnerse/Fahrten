@@ -1,0 +1,614 @@
+/* =============================================================================
+   Fahrtenplaner — Studio edition
+   Modern, refined, calm. Off-white surface, warm coral accent, soft shadows.
+   ========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Onest:wght@300..900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+    /* Surfaces — slightly cooler/whiter for DB feel */
+    --bg:          #FBFBF9;
+    --surface:     #FFFFFF;
+    --surface-2:   #F4F4F2;
+    --surface-3:   #ECECE9;
+    --border:      #E3E3E0;
+    --border-soft: #EEEEEC;
+    --ink:         #0A0A09;
+    --ink-soft:    #2C2C2A;
+    --text:        #494946;
+    --sub:         #8B8B86;
+
+    /* Verkehrsrot — Deutsche Bahn brand red */
+    --accent:      #EC0016;
+    --accent-dark: #C70012;
+    --accent-deep: #A8000F;
+    --accent-soft: #FDE4E6;
+
+    --success:     #1D7A56;
+    --success-soft:#E1F2EA;
+    --warning:     #B8860B;
+    --warning-soft:#FBF4E1;
+    --danger:      #EC0016;
+    --danger-soft: #FDE4E6;
+
+    --sans: 'Onest', -apple-system, BlinkMacSystemFont, sans-serif;
+    --mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+
+    --radius-sm: 6px;
+    --radius:    8px;
+    --radius-lg: 12px;
+
+    --shadow-xs: 0 1px 2px rgba(14, 14, 12, 0.04);
+    --shadow-sm: 0 1px 2px rgba(14, 14, 12, 0.04), 0 1px 3px rgba(14, 14, 12, 0.04);
+    --shadow:    0 4px 8px -2px rgba(14, 14, 12, 0.06), 0 2px 4px -2px rgba(14, 14, 12, 0.04);
+    --shadow-lg: 0 12px 24px -8px rgba(14, 14, 12, 0.10), 0 4px 8px -4px rgba(14, 14, 12, 0.06);
+}
+
+/* --- Hide all Streamlit chrome -------------------------------------------- */
+header[data-testid="stHeader"],
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="stAppDeployButton"],
+[class*="viewerBadge"],
+.viewerBadge_link__qRIco,
+footer,
+#MainMenu { display: none !important; }
+
+/* --- Surface -------------------------------------------------------------- */
+[data-testid="stApp"],
+[data-testid="stAppViewContainer"] {
+    background: var(--bg);
+}
+
+/* --- Global typography ---------------------------------------------------- */
+html, body, [data-testid="stApp"] {
+    font-family: var(--sans);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+}
+
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li,
+.stTextInput label,
+.stNumberInput label,
+.stSelectbox label,
+.stMultiSelect label,
+.stDateInput label,
+.stTimeInput label,
+.stCheckbox label {
+    font-family: var(--sans) !important;
+    color: var(--ink-soft);
+}
+
+label[data-testid="stWidgetLabel"] {
+    font-family: var(--sans) !important;
+    font-size: 0.82rem !important;
+    font-weight: 500 !important;
+    color: var(--ink-soft) !important;
+    margin-bottom: 0.4rem !important;
+    letter-spacing: -0.005em;
+}
+
+/* --- Headings: clean modern sans ----------------------------------------- */
+h1, h2, h3,
+.stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+    font-family: var(--sans) !important;
+    color: var(--ink);
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    line-height: 1.15;
+}
+h1, .stMarkdown h1 { font-size: 1.85rem; margin: 0 0 0.4rem; font-weight: 700; letter-spacing: -0.035em; }
+h2, .stMarkdown h2 { font-size: 1.35rem; margin: 1.6rem 0 0.7rem; }
+h3, .stMarkdown h3 { font-size: 1.05rem; margin: 1.0rem 0 0.5rem; }
+
+/* --- The wordmark / hero --------------------------------------------------- */
+.studio-hero {
+    margin: 0.5rem 0 1.6rem;
+    animation: fade-up 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.studio-hero .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--ink-soft);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.32rem 0.85rem 0.32rem 0.5rem;
+    margin-bottom: 1.0rem;
+    box-shadow: var(--shadow-xs);
+}
+.studio-hero .eyebrow .db-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent);
+    color: #FFFFFF;
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 0.68rem;
+    letter-spacing: 0.02em;
+    padding: 0.2rem 0.4rem;
+    border-radius: 3px;
+    line-height: 1;
+    box-shadow: 0 1px 2px rgba(168, 0, 15, 0.18);
+}
+.studio-hero .eyebrow .ver {
+    font-family: var(--mono);
+    color: var(--sub);
+    font-weight: 500;
+    font-size: 0.72rem;
+    margin-left: 0.4rem;
+    padding-left: 0.6rem;
+    border-left: 1px solid var(--border);
+}
+.studio-hero h1.title {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 2.6rem;
+    line-height: 1.05;
+    letter-spacing: -0.04em;
+    color: var(--ink);
+    margin: 0 0 0.5rem;
+}
+.studio-hero h1.title .accent {
+    color: var(--accent);
+    font-style: italic;
+    font-weight: 600;
+}
+.studio-hero .subtitle {
+    font-family: var(--sans);
+    font-size: 1.0rem;
+    color: var(--text);
+    max-width: 60ch;
+    line-height: 1.5;
+}
+@keyframes fade-up {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Sidebar: soft surface ------------------------------------------------ */
+[data-testid="stSidebar"] {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+}
+[data-testid="stSidebar"] hr {
+    border: 0;
+    border-top: 1px solid var(--border-soft);
+    margin: 1.0rem 0;
+}
+[data-testid="stSidebarUserContent"] {
+    padding-top: 1.5rem;
+}
+
+/* Sidebar section labels */
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 {
+    font-family: var(--sans) !important;
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    color: var(--sub) !important;
+    margin: 1.4rem 0 0.55rem !important;
+    letter-spacing: 0.01em;
+}
+
+/* --- Buttons: modern soft -------------------------------------------------- */
+.stButton > button,
+.stDownloadButton > button {
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-weight: 500;
+    font-size: 0.9rem;
+    letter-spacing: -0.005em;
+    padding: 0.55rem 1.05rem;
+    box-shadow: var(--shadow-xs);
+    transition: all 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.stButton > button:hover,
+.stDownloadButton > button:hover {
+    background: var(--surface-2);
+    border-color: var(--ink-soft);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow);
+}
+.stButton > button:active,
+.stDownloadButton > button:active {
+    transform: translateY(0);
+    box-shadow: var(--shadow-xs);
+}
+.stButton > button[kind="primary"] {
+    background: var(--accent) !important;
+    color: #FFFFFF !important;
+    border-color: var(--accent-dark) !important;
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(168, 0, 15, 0.12), inset 0 -1px 0 rgba(0, 0, 0, 0.08);
+}
+.stButton > button[kind="primary"] *,
+.stButton > button[kind="primary"] p,
+.stButton > button[kind="primary"] [data-testid="stMarkdownContainer"],
+.stButton > button[kind="primary"] [data-testid="stMarkdownContainer"] p {
+    color: #FFFFFF !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: var(--accent-dark) !important;
+    border-color: var(--accent-deep) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px -2px rgba(168, 0, 15, 0.25), inset 0 -1px 0 rgba(0, 0, 0, 0.10);
+}
+.stButton > button[kind="primary"]:active {
+    background: var(--accent-deep) !important;
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(168, 0, 15, 0.12);
+}
+
+/* --- Inputs: modern soft -------------------------------------------------- */
+.stTextInput > div > div,
+.stNumberInput > div > div,
+.stDateInput > div > div,
+.stTimeInput > div > div,
+[data-baseweb="select"] > div {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-sm) !important;
+    transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.stTextInput > div > div:focus-within,
+.stNumberInput > div > div:focus-within,
+.stDateInput > div > div:focus-within,
+.stTimeInput > div > div:focus-within,
+[data-baseweb="select"] > div:focus-within {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px rgba(236, 0, 22, 0.10) !important;
+}
+.stTextInput input,
+.stNumberInput input,
+.stDateInput input,
+.stTimeInput input {
+    background: transparent !important;
+    color: var(--ink) !important;
+    font-family: var(--sans) !important;
+    font-size: 0.92rem !important;
+    padding: 0.5rem 0.7rem !important;
+    border: 0 !important;
+}
+
+/* Multiselect tags */
+[data-baseweb="tag"] {
+    background: var(--surface-3) !important;
+    color: var(--ink) !important;
+    border-radius: var(--radius-sm) !important;
+    border: 1px solid var(--border) !important;
+    font-family: var(--sans) !important;
+    font-size: 0.8rem !important;
+    font-weight: 500 !important;
+    padding: 0.15rem 0.55rem !important;
+}
+[data-baseweb="tag"]:hover {
+    background: var(--surface-2) !important;
+}
+
+/* --- Tabs: clean underline ----------------------------------------------- */
+[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    border-bottom: 1px solid var(--border);
+    gap: 0.4rem;
+    padding-bottom: 0;
+}
+[data-testid="stTabs"] [data-baseweb="tab"] {
+    font-family: var(--sans);
+    font-size: 0.92rem;
+    font-weight: 500;
+    color: var(--sub);
+    padding: 0.65rem 0.9rem;
+    background: transparent !important;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    transition: color 140ms ease, background 140ms ease;
+}
+[data-testid="stTabs"] [data-baseweb="tab"]:hover {
+    color: var(--ink-soft);
+    background: var(--surface-2) !important;
+}
+[data-testid="stTabs"] [aria-selected="true"] {
+    color: var(--ink) !important;
+    font-weight: 600;
+}
+[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+    background-color: var(--accent) !important;
+    height: 2px !important;
+    border-radius: 2px;
+}
+
+/* --- Metrics: clean cards ------------------------------------------------ */
+[data-testid="stMetric"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 1.0rem 1.15rem;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-xs);
+    transition: box-shadow 200ms ease, transform 200ms ease;
+}
+[data-testid="stMetric"]:hover {
+    box-shadow: var(--shadow-sm);
+}
+[data-testid="stMetricLabel"] {
+    font-family: var(--sans) !important;
+    font-size: 0.78rem !important;
+    color: var(--sub) !important;
+    font-weight: 500 !important;
+    letter-spacing: -0.002em;
+}
+[data-testid="stMetricValue"] {
+    font-family: var(--mono) !important;
+    font-variant-numeric: tabular-nums;
+    font-weight: 500 !important;
+    color: var(--ink) !important;
+    font-size: 1.65rem !important;
+    letter-spacing: -0.015em;
+    margin-top: 0.2rem !important;
+}
+
+/* --- Expanders: clean cards ----------------------------------------------- */
+[data-testid="stExpander"] {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow-xs);
+    overflow: hidden;
+}
+[data-testid="stExpander"] summary,
+[data-testid="stExpander"] details > summary {
+    font-family: var(--sans) !important;
+    font-size: 0.88rem !important;
+    font-weight: 500 !important;
+    color: var(--ink-soft) !important;
+    padding: 0.75rem 1.0rem !important;
+    background: transparent !important;
+    transition: background 140ms ease;
+}
+[data-testid="stExpander"] summary:hover {
+    background: var(--surface-2) !important;
+}
+[data-testid="stExpander"] details[open] summary {
+    border-bottom: 1px solid var(--border-soft);
+}
+
+/* --- Dataframes: clean ---------------------------------------------------- */
+.stDataFrame, [data-testid="stDataFrame"] {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--surface);
+}
+.stDataFrame [role="cell"],
+.stDataFrame [data-testid="StyledDataFrameDataCell"] {
+    font-family: var(--mono) !important;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.85rem !important;
+}
+.stDataFrame [role="columnheader"] {
+    font-family: var(--sans) !important;
+    font-weight: 600 !important;
+    color: var(--ink-soft) !important;
+    background: var(--surface-2) !important;
+    font-size: 0.78rem !important;
+}
+
+/* --- Alerts: soft pills ---------------------------------------------------- */
+[data-testid="stAlert"] {
+    border-radius: var(--radius) !important;
+    border: 1px solid var(--border) !important;
+    padding: 0.75rem 1.0rem !important;
+    box-shadow: var(--shadow-xs);
+}
+[data-testid="stAlert"][data-baseweb="notification"] {
+    font-family: var(--sans);
+    font-size: 0.9rem;
+}
+[data-testid="stAlert"][data-baseweb="notification"][kind="info"] {
+    background: var(--surface) !important;
+    border-color: var(--border) !important;
+    color: var(--ink-soft) !important;
+}
+[data-testid="stAlert"][data-baseweb="notification"][kind="success"] {
+    background: var(--success-soft) !important;
+    border-color: rgba(29, 122, 86, 0.2) !important;
+    color: var(--success) !important;
+}
+[data-testid="stAlert"][data-baseweb="notification"][kind="warning"] {
+    background: var(--warning-soft) !important;
+    border-color: rgba(184, 134, 11, 0.2) !important;
+    color: var(--warning) !important;
+}
+[data-testid="stAlert"][data-baseweb="notification"][kind="error"] {
+    background: var(--danger-soft) !important;
+    border-color: rgba(199, 66, 30, 0.2) !important;
+    color: var(--danger) !important;
+}
+
+/* --- Captions ------------------------------------------------------------- */
+[data-testid="stCaptionContainer"],
+.stCaption {
+    font-family: var(--sans) !important;
+    font-size: 0.82rem !important;
+    color: var(--sub) !important;
+    line-height: 1.5;
+}
+
+/* --- Tour cards: modern surface with day rule --------------------------- */
+.tour-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.0rem 1.15rem;
+    margin: 0.55rem 0;
+    color: var(--text);
+    font-family: var(--sans);
+    box-shadow: var(--shadow-xs);
+    position: relative;
+    overflow: hidden;
+    transition: box-shadow 200ms ease, transform 200ms ease, border-color 200ms ease;
+    animation: card-fade 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.tour-card:hover {
+    box-shadow: var(--shadow);
+    transform: translateY(-1px);
+    border-color: var(--ink-soft);
+}
+.tour-card::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--ink);
+    border-radius: var(--radius) 0 0 var(--radius);
+}
+.tour-card.day-mi::before { background: #1D7A56; }
+.tour-card.day-do::before { background: #B8860B; }
+.tour-card.day-fr::before { background: var(--accent); }
+
+.tour-card .head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.55rem;
+}
+.tour-card .head .nr {
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: 0.78rem;
+    color: var(--sub);
+    letter-spacing: -0.005em;
+}
+.tour-card .head .price {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--ink);
+    font-size: 1.0rem;
+    letter-spacing: -0.015em;
+}
+.tour-card .route {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.95rem;
+    line-height: 1.55;
+    color: var(--ink-soft);
+}
+.tour-card .route .arrow {
+    color: var(--accent);
+    margin: 0 0.45em;
+    font-weight: 600;
+}
+.tour-card .route .station { color: var(--ink); }
+.tour-card .route .time { color: var(--ink); font-weight: 600; }
+.tour-card .meta {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--sub);
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border-soft);
+}
+@keyframes card-fade {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Warning callouts ----------------------------------------------------- */
+.warning-box, .sev-box {
+    font-family: var(--sans);
+    font-size: 0.88rem;
+    padding: 0.6rem 0.85rem;
+    margin: 0.4rem 0;
+    border-radius: var(--radius-sm);
+    border: 1px solid;
+    display: flex;
+    gap: 0.55rem;
+    align-items: flex-start;
+    line-height: 1.45;
+}
+.warning-box {
+    background: var(--warning-soft);
+    border-color: rgba(184, 134, 11, 0.25);
+    color: var(--warning);
+}
+.sev-box {
+    background: var(--danger-soft);
+    border-color: rgba(199, 66, 30, 0.25);
+    color: var(--danger);
+    font-weight: 500;
+}
+
+/* --- Progress bar: clean accent ------------------------------------------ */
+.stProgress > div > div > div > div {
+    background: linear-gradient(90deg, var(--accent), var(--accent-dark)) !important;
+    border-radius: 999px !important;
+}
+.stProgress > div > div > div {
+    background-color: var(--surface-3) !important;
+    border-radius: 999px !important;
+    height: 4px !important;
+    overflow: hidden;
+}
+
+/* --- Code, kbd ------------------------------------------------------------ */
+code, pre, kbd {
+    font-family: var(--mono) !important;
+    background: var(--surface-2);
+    color: var(--ink);
+    padding: 0.05em 0.35em;
+    border-radius: 4px;
+    font-size: 0.88em;
+    border: 1px solid var(--border-soft);
+}
+
+/* --- Block container: generous, modern ----------------------------------- */
+[data-testid="stMainBlockContainer"] {
+    padding-top: 2.2rem;
+    max-width: 1180px;
+}
+
+/* --- Dividers ------------------------------------------------------------- */
+[data-testid="stMainBlockContainer"] hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 1.6rem 0;
+}
+
+/* --- Sidebar buttons: full width feels modern ---------------------------- */
+[data-testid="stSidebar"] .stButton > button {
+    border-radius: var(--radius-sm);
+    width: 100%;
+    justify-content: center;
+}
+
+/* --- Scrollbar (Webkit) --------------------------------------------------- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 999px;
+    border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--sub); }
+
+/* --- Selection ------------------------------------------------------------ */
+::selection { background: var(--accent-soft); color: var(--accent-dark); }
+
+/* --- Focus visible (accessibility) --------------------------------------- */
+*:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+}

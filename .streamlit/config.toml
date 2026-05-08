@@ -1,3 +1,17 @@
+[theme]
+base = "light"
+primaryColor = "#EC0016"
+backgroundColor = "#FBFBF9"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#0E0E0C"
+font = "sans serif"
+
 [server]
 address = "localhost"
 runOnSave = true
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
