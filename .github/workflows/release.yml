@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+      GITHUB_REPOSITORY_FULL: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Sync VERSION with tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          printf '%s\n' "$tag" > VERSION
+
+      - name: Generate _build_config.py
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, pathlib
+          repo = os.environ["GITHUB_REPOSITORY_FULL"]
+          key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+          out = pathlib.Path("fahrtenplaner/_build_config.py")
+          out.write_text(
+              "ENV = {\n"
+              f"    \"FAHRTEN_GITHUB_REPO\": {repo!r},\n"
+              f"    \"GOOGLE_MAPS_API_KEY\": {key!r},\n"
+              "}\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Install build deps
+        shell: bash
+        run: |
+          uv venv .venv --python 3.12
+          source .venv/Scripts/activate
+          uv pip install -r requirements.txt
+          uv pip install pyinstaller pywebview
+
+      - name: Build Fahrtenplaner.exe
+        shell: bash
+        run: |
+          source .venv/Scripts/activate
+          pyinstaller Fahrtenplaner.spec --clean --noconfirm
+
+      - name: Upload artifact (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fahrtenplaner-windows
+          path: dist/Fahrtenplaner.exe
+
+      - name: Attach to release (tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Fahrtenplaner.exe
+          generate_release_notes: true

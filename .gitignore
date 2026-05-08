@@ -11,3 +11,15 @@ build/
 .tools/
 .streamlit/secrets.toml
 .idea/
+
+# PyInstaller / build artifacts
+build/
+dist/
+*.manifest
+*.spec.bak
+
+# Update staging
+update/
+
+# Build-time generated config (contains secrets)
+fahrtenplaner/_build_config.py

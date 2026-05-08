@@ -15,6 +15,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from models import Tour, DayPlan, ChainLink
 from myres_client import MyRESClient, load_tours_from_excel
 from optimizer import optimize_day
+from updater import (
+    GITHUB_REPO,
+    current_version,
+    download_update,
+    fetch_latest_release,
+    is_newer,
+)
 
 # Pfad zur lokalen Demo-Excel (für Entwicklung, falls MyRES nicht erreichbar)
 _DEMO_EXCEL = Path(__file__).parent.parent / "Freie_Touren_BB_MV_01-03_April_2026.xlsx"
@@ -78,7 +85,7 @@ if auth_config:
     authenticator.login(fields={
         'Form name': 'Anmeldung',
         'Username': 'Benutzername',
-        'Password': 'Passwort',
+        'Password': 'Passwort',  # NOSONAR(python:S2068) — UI label dict required by streamlit-authenticator API, not a credential
         'Login': 'Anmelden',
         'Captcha': 'Captcha',
     })
@@ -171,7 +178,7 @@ tours = st.session_state.tours
 if tours:
     st.sidebar.divider()
     st.sidebar.metric("Geladene Touren", len(tours))
-    dates = sorted(set(t.date for t in tours))
+    dates = sorted({t.date for t in tours})
     st.sidebar.metric("Tage", len(dates))
     total_euros = sum(t.euros for t in tours)
     st.sidebar.metric("Gesamtwert", f"{total_euros:.0f} €")
@@ -200,7 +207,7 @@ def _render_result(plan: DayPlan):
     """Rendert das Optimierungsergebnis."""
 
     # Kennzahlen
-    st.success(f"Optimale Route gefunden!")
+    st.success("Optimale Route gefunden!")
     m1, m2, m3 = st.columns(3)
     m1.metric("Gesamtverdienst", f"{plan.total_euros:.2f} €")
     m2.metric("Anzahl Touren", plan.num_tours)
@@ -281,9 +288,6 @@ def _render_connection_block(title: str, link: ChainLink, color: str):
     conn = link.connection
     if not conn or not conn.legs:
         return
-
-    border_colors = {"blue": "#1f77b4", "green": "#2ca02c", "gray": "#999"}
-    bc = border_colors.get(color, "#999")
 
     warning_html = ""
     if link.warning:
@@ -445,6 +449,44 @@ with tab_optimize:
 # ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
+
+st.sidebar.divider()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _check_for_update(_repo: str):
+    return fetch_latest_release()
+
+
+with st.sidebar.expander(f"Über / Update — v{current_version()}"):
+    if GITHUB_REPO == "OWNER/REPO":
+        st.caption("Auto-Update nicht konfiguriert (Dev-Modus).")
+    else:
+        release = _check_for_update(GITHUB_REPO)
+        if release is None:
+            st.caption("Update-Server nicht erreichbar.")
+        elif is_newer(release.tag, current_version()):
+            st.markdown(f"**Neue Version verfügbar: {release.tag}**")
+            if release.body:
+                with st.expander("Was ist neu?"):
+                    st.markdown(release.body)
+
+            if st.session_state.get("update_staged"):
+                st.success("Update geladen. Bitte App neu starten.")
+            else:
+                if st.button("Aktualisieren", type="primary", use_container_width=True):
+                    progress = st.progress(0.0, text="Lade Update...")
+                    try:
+                        download_update(release, progress=lambda p: progress.progress(p))
+                        progress.empty()
+                        st.session_state.update_staged = True
+                        st.success("Update geladen. Bitte App neu starten.")
+                        st.rerun()
+                    except Exception as e:
+                        progress.empty()
+                        st.error(f"Update fehlgeschlagen: {e}")
+        else:
+            st.caption("Auf neuestem Stand ✓")
 
 st.sidebar.divider()
 with st.sidebar.expander("Debug / Diagnostik"):
