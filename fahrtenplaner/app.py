@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-import streamlit_authenticator as stauth
 
 # Modell-Importe
 sys.path.insert(0, str(Path(__file__).parent))
 from models import Tour, DayPlan, ChainLink
 from myres_client import MyRESClient, load_tours_from_excel
 from optimizer import optimize_day
+from db_client import lookup_station
 from updater import (
     GITHUB_REPO,
     current_version,
@@ -42,50 +42,57 @@ st.set_page_config(
 # Styles — Bahnamt edition
 # ---------------------------------------------------------------------------
 
-@st.cache_data
-def _load_stylesheet() -> str:
-    css_path = Path(__file__).parent / "assets" / "style.css"
-    return css_path.read_text(encoding="utf-8") if css_path.exists() else ""
+_CSS_PATH = Path(__file__).parent / "assets" / "style.css"
 
-_css = _load_stylesheet()
+
+@st.cache_data
+def _load_stylesheet(_mtime_ns: int) -> str:
+    """mtime_ns participates in the cache key so saving style.css invalidates the cache."""
+    return _CSS_PATH.read_text(encoding="utf-8") if _CSS_PATH.exists() else ""
+
+
+_css = _load_stylesheet(_CSS_PATH.stat().st_mtime_ns if _CSS_PATH.exists() else 0)
 if _css:
     st.markdown(f"<style>{_css}</style>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Auth Gate (nur aktiv wenn [auth] Block in secrets.toml vorhanden)
+# Error Reporting — copyable modal so Dad can forward issues to Sebastian
 # ---------------------------------------------------------------------------
 
-def _to_plain(obj):
-    """Convert st.secrets proxy objects to plain Python dicts/lists/scalars."""
-    try:
-        # dict-like
-        return {k: _to_plain(v) for k, v in obj.items()}
-    except AttributeError:
-        pass
-    if isinstance(obj, (list, tuple)):
-        return [_to_plain(v) for v in obj]
-    return obj
-
-auth_config = st.secrets.get("auth", None)
-if auth_config:
-    authenticator = stauth.Authenticate(
-        _to_plain(auth_config["credentials"]),
-        str(auth_config["cookie_name"]),
-        str(auth_config["cookie_key"]),
-        float(auth_config["cookie_expiry_days"]),
+@st.dialog("Fehler – bitte an Sebastian senden", width="large")
+def _show_error_dialog(title: str, details: str, timestamp: str) -> None:
+    st.markdown(f"**{title}**")
+    st.write(
+        "Bitte schicke Sebastian den folgenden Text. "
+        "Mit dem Symbol oben rechts im Feld kannst du alles kopieren."
     )
-    authenticator.login(fields={
-        'Form name': 'Anmeldung',
-        'Username': 'Benutzername',
-        'Password': 'Passwort',  # NOSONAR(python:S2068) — UI label dict required by streamlit-authenticator API, not a credential
-        'Login': 'Anmelden',
-        'Captcha': 'Captcha',
-    })
-    if not st.session_state.get("authentication_status"):
-        if st.session_state.get("authentication_status") is False:
-            st.error("Falscher Benutzername oder Passwort")
-        st.stop()
-    authenticator.logout("Abmelden", "sidebar")
+    body = (
+        f"Fahrtenplaner v{current_version()}\n"
+        f"Zeitpunkt: {timestamp}\n\n"
+        f"{title}\n"
+        f"--------------------------------\n"
+        f"{details or '(keine weiteren Details)'}\n"
+    )
+    st.code(body, language="text")
+    if st.button("Schließen", use_container_width=True):
+        st.rerun()
+
+
+def _report_error(title: str, details: str = "", exc: BaseException | None = None) -> None:
+    """Open a modal showing a copyable error report. Single funnel for all surface errors."""
+    import traceback
+    parts = []
+    if details:
+        parts.append(details)
+    if exc is not None:
+        parts.append(f"{type(exc).__name__}: {exc}")
+        tb = traceback.format_exc()
+        if tb and tb.strip() and tb.strip() != "NoneType: None":
+            parts.append(tb.rstrip())
+    full = "\n\n".join(p for p in parts if p)
+    ts = datetime.now().isoformat(timespec="seconds")
+    _show_error_dialog(title, full, ts)
+
 
 # ---------------------------------------------------------------------------
 # Session State
@@ -120,7 +127,7 @@ states = st.sidebar.multiselect(
     default=["Brandenburg", "Mecklenburg-Vorpommern"],
 )
 
-selected_date = st.sidebar.date_input("Datum", value=date(2026, 4, 1))
+selected_date = st.sidebar.date_input("Datum", value=date.today())
 
 st.sidebar.markdown("### Bahnhöfe")
 home_station = st.sidebar.text_input(
@@ -142,21 +149,61 @@ if st.sidebar.button("Touren laden", type="primary", use_container_width=True):
     if not username or not password:
         st.sidebar.error("Zugangsdaten fehlen – klicke ⚙️ oben")
     else:
+        _fetch_failed = False
+        _fetch_exc: Exception | None = None
         with st.sidebar.status("Verbinde mit MyRES...") as status:
             client = MyRESClient()
-            if client.login(username, password):
+            if not client.login(username, password):
+                status.update(label="Login fehlgeschlagen", state="error")
+                _fetch_failed = True
+                _fetch_error_title = "Anmeldung bei MyRES fehlgeschlagen"
+                _fetch_error_details = (
+                    f"MyRES-Fehlermeldung: {client.last_error}\n"
+                    f"Benutzername: {username}\n"
+                    f"Bundesländer: {', '.join(states)}\n"
+                    f"Datum: {selected_date.strftime('%d.%m.%Y')}"
+                )
+            else:
                 status.update(label="Login OK – lade Touren...")
-                tours = client.fetch_free_tours(states, selected_date, selected_date)
+                try:
+                    tours = client.fetch_free_tours(states, selected_date, selected_date)
+                except Exception as e:
+                    tours = []
+                    _fetch_failed = True
+                    _fetch_exc = e
+                    _fetch_error_title = "Touren-Abruf fehlgeschlagen (Ausnahme)"
+                    _fetch_error_details = (
+                        f"Bundesländer: {', '.join(states)}\n"
+                        f"Datum: {selected_date.strftime('%d.%m.%Y')}"
+                    )
+
                 st.session_state.tours = tours
                 st.session_state.myres_client = client
+
                 if tours:
                     status.update(label=f"{len(tours)} Touren geladen!", state="complete")
-                else:
-                    status.update(label="Login OK, aber keine Touren gefunden", state="complete")
-                    st.sidebar.warning("Keine Touren im gewählten Zeitraum. Filter anpassen?")
-            else:
-                status.update(label="Login fehlgeschlagen", state="error")
-                st.sidebar.error(f"Login-Fehler: {client.last_error}")
+                elif client.last_error:
+                    status.update(label="Touren-Abruf fehlgeschlagen", state="error")
+                    _fetch_failed = True
+                    _fetch_error_title = "Touren-Abruf fehlgeschlagen"
+                    _fetch_error_details = (
+                        f"MyRES-Fehlermeldung: {client.last_error}\n"
+                        f"Bundesländer: {', '.join(states)}\n"
+                        f"Datum: {selected_date.strftime('%d.%m.%Y')}"
+                    )
+                elif not _fetch_failed:
+                    status.update(label="Keine Touren gefunden", state="complete")
+                    st.sidebar.warning(
+                        "Keine Touren im gewählten Zeitraum. "
+                        "Bundesländer / Datum anpassen?"
+                    )
+
+        if _fetch_failed:
+            _report_error(
+                _fetch_error_title,
+                details=_fetch_error_details,
+                exc=_fetch_exc,
+            )
 
 # Demo-Daten (für Entwicklung / falls MyRES nicht erreichbar)
 if not st.session_state.tours and _DEMO_EXCEL.exists():
@@ -224,18 +271,29 @@ def _render_result(plan: DayPlan):
 
     st.divider()
 
+    # Karte (optional, standardmäßig aus — schont Platz auf der Seite)
+    if st.toggle(
+        "Tagesroute auf Karte anzeigen",
+        value=False,
+        key="show_route_map",
+        help="Zeigt Anreise (grau), Touren (rot) und Rückreise (grau) auf einer Karte.",
+    ):
+        _render_route_map(plan)
+
+    st.divider()
+
     # Tagesplan
     st.subheader("Tagesplan")
 
     for i, link in enumerate(plan.chain):
         if link.type == "anreise":
-            _render_connection_block("🚉 Anreise", link, "blue")
+            _render_connection_block("🚉 Anreise", link)
         elif link.type == "tour":
             _render_tour_block(link)
         elif link.type == "transfer":
-            _render_connection_block("🔄 Transfer", link, "gray")
+            _render_connection_block("🔄 Transfer", link)
         elif link.type == "rückreise":
-            _render_connection_block("🏠 Rückreise", link, "green")
+            _render_connection_block("🏠 Rückreise", link)
 
     # Zusammenfassung als Tabelle
     st.divider()
@@ -261,6 +319,185 @@ def _render_result(plan: DayPlan):
             use_container_width=True,
             hide_index=True,
         )
+
+
+_MAP_COLORS = {
+    "anreise":   [108, 122, 140, 210],   # muted slate (commuting)
+    "tour":      [236,   0,  22, 235],   # Verkehrsrot — the paid work
+    "transfer":  [170, 170, 165, 190],   # light gray (idle connection)
+    "rückreise": [108, 122, 140, 210],   # muted slate (return)
+}
+
+
+def _collect_station_coords(plan: DayPlan) -> dict[str, tuple[float, float]]:
+    """Resolve every station name in the chain to (lng, lat) via cached geocoding."""
+    coords: dict[str, tuple[float, float]] = {}
+
+    def add(name: str) -> None:
+        if name in coords:
+            return
+        info = lookup_station(name)
+        if info and info.get("location"):
+            loc = info["location"]
+            coords[name] = (float(loc["lng"]), float(loc["lat"]))
+
+    for link in plan.chain:
+        if link.tour:
+            add(link.tour.departure_station)
+            add(link.tour.arrival_station)
+        if link.connection:
+            for leg in link.connection.legs:
+                add(leg.departure_station)
+                add(leg.arrival_station)
+    return coords
+
+
+def _build_route_segments(
+    plan: DayPlan, coords: dict[str, tuple[float, float]]
+) -> list[dict]:
+    """Build pydeck LineLayer segments with type-coded colors."""
+    segments: list[dict] = []
+
+    def push(a_name: str, b_name: str, ctype: str, label: str) -> None:
+        a = coords.get(a_name)
+        b = coords.get(b_name)
+        if not a or not b or a == b:
+            return
+        segments.append({
+            "from": [a[0], a[1]],
+            "to":   [b[0], b[1]],
+            "color": _MAP_COLORS.get(ctype, [120, 120, 120, 200]),
+            "label": label,
+        })
+
+    for link in plan.chain:
+        if link.type == "tour" and link.tour:
+            push(
+                link.tour.departure_station,
+                link.tour.arrival_station,
+                "tour",
+                f"Tour {link.tour.tour_nr} · {link.tour.euros:.2f} €",
+            )
+        elif link.connection:
+            for leg in link.connection.legs:
+                push(
+                    leg.departure_station,
+                    leg.arrival_station,
+                    link.type,
+                    f"{link.type.capitalize()} · {leg.line}",
+                )
+    return segments
+
+
+def _zoom_from_span(span: float) -> int:
+    """Fallback zoom level for a given lat/lng span (degrees)."""
+    if span >= 4:
+        return 5
+    if span >= 1.5:
+        return 6
+    if span >= 0.5:
+        return 7
+    return 9
+
+
+def _compute_route_view_state(coords: dict[str, tuple[float, float]], pdk):
+    """Mercator-aware bbox fit with a generous safety margin. Falls back to a heuristic."""
+    point_list = [[lng, lat] for (lng, lat) in coords.values()]
+    try:
+        from pydeck.data_utils import compute_view
+        view = compute_view(point_list, view_proportion=0.85)
+        return pdk.ViewState(
+            latitude=view.latitude,
+            longitude=view.longitude,
+            zoom=max(float(view.zoom) - 1.0, 4),
+            pitch=0,
+        )
+    except Exception:
+        lngs = [c[0] for c in coords.values()]
+        lats = [c[1] for c in coords.values()]
+        span = max(max(lats) - min(lats), max(lngs) - min(lngs)) or 0.1
+        return pdk.ViewState(
+            latitude=(min(lats) + max(lats)) / 2,
+            longitude=(min(lngs) + max(lngs)) / 2,
+            zoom=_zoom_from_span(span),
+            pitch=0,
+        )
+
+
+def _render_map_legend() -> None:
+    def bar(color: str) -> str:
+        return (
+            f'<svg width="22" height="4" style="vertical-align:middle;margin-right:6px;" '
+            f'aria-hidden="true"><rect width="22" height="4" rx="2" fill="{color}"/></svg>'
+        )
+
+    st.markdown(
+        f"""
+        <div class="map-legend">
+          <span class="leg">{bar('#EC0016')}Tour (bezahlt)</span>
+          <span class="leg">{bar('#6C7A8C')}Anreise / Rückreise</span>
+          <span class="leg">{bar('#AAAAA5')}Transfer</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+_MAP_TOOLTIP_STYLE = {
+    "backgroundColor": "#FFFFFF",
+    "color": "#0E0E0C",
+    "fontFamily": "Onest, sans-serif",
+    "fontSize": "12px",
+    "padding": "6px 10px",
+    "border": "1px solid #E3E3E0",
+    "borderRadius": "8px",
+    "boxShadow": "0 4px 12px rgba(0,0,0,0.08)",
+}
+
+
+def _render_route_map(plan: DayPlan) -> None:
+    """Render the daily route on a map. Tour segments in DB red, anreise/rückreise muted."""
+    if not plan.chain:
+        return
+
+    coords = _collect_station_coords(plan)
+    if len(coords) < 2:
+        st.caption("Karte: nicht genug Stationen mit Koordinaten gefunden.")
+        return
+
+    segments = _build_route_segments(plan, coords)
+    if not segments:
+        return
+
+    try:
+        import pydeck as pdk
+    except ImportError:
+        st.caption("Karte nicht verfügbar (pydeck fehlt).")
+        return
+
+    line_layer = pdk.Layer(
+        "LineLayer", data=segments,
+        get_source_position="from", get_target_position="to",
+        get_color="color", get_width=5, pickable=True,
+    )
+    station_data = [{"name": n, "label": "", "position": [c[0], c[1]]} for n, c in coords.items()]
+    station_layer = pdk.Layer(
+        "ScatterplotLayer", data=station_data,
+        get_position="position", get_color=[14, 14, 12, 230],
+        get_radius=400, radius_min_pixels=4, radius_max_pixels=7,
+        line_width_min_pixels=1, get_line_color=[255, 255, 255, 240],
+        stroked=True, pickable=True,
+    )
+
+    deck = pdk.Deck(
+        layers=[line_layer, station_layer],
+        initial_view_state=_compute_route_view_state(coords, pdk),
+        map_provider="carto", map_style="light",
+        tooltip={"html": "<b>{name}{label}</b>", "style": _MAP_TOOLTIP_STYLE},
+    )
+
+    _render_map_legend()
+    st.pydeck_chart(deck, use_container_width=True, height=320)
 
 
 def _render_tour_block(link: ChainLink):
@@ -293,7 +530,7 @@ def _render_tour_block(link: ChainLink):
     )
 
 
-def _render_connection_block(title: str, link: ChainLink, color: str):
+def _render_connection_block(title: str, link: ChainLink):
     """Rendert einen Verbindungs-Block (Anreise/Transfer/Rückreise)."""
     conn = link.connection
     if not conn or not conn.legs:
@@ -322,15 +559,211 @@ def _render_connection_block(title: str, link: ChainLink, color: str):
 
 
 # ---------------------------------------------------------------------------
-# Tab 1: Touren-Übersicht
+# Hauptbereich – Single-Flow: Plan-Kontext → Optimierung → Tour-Browser
 # ---------------------------------------------------------------------------
 
-tab_overview, tab_optimize = st.tabs(["Touren-Übersicht", "Optimierung"])
+# Persisted optimization result so it survives reruns.
+if "last_plan" not in st.session_state:
+    st.session_state.last_plan = None
+if "last_plan_log" not in st.session_state:
+    st.session_state.last_plan_log = []
 
-with tab_overview:
-    st.subheader("Verfügbare Touren")
+day_tours = [t for t in tours if t.date == selected_date]
+_WEEKDAYS_DE = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+_day_label = f"{_WEEKDAYS_DE[selected_date.weekday()]} · {selected_date.strftime('%d.%m.%Y')}"
+_route_value = (
+    f'<span class="station">{home_station}</span>'
+    f'<span class="arrow">→</span>'
+    f'<span class="station">{home_station if same_station else dest_station}</span>'
+)
 
-    # Zu DataFrame konvertieren
+# --- Plan-context strip --------------------------------------------------- #
+st.markdown(
+    f"""
+    <div class="plan-strip">
+      <div class="item">
+        <span class="label">Datum</span>
+        <span class="value">{_day_label}</span>
+      </div>
+      <div class="sep">·</div>
+      <div class="item">
+        <span class="label">Touren am Tag</span>
+        <span class="value">{len(day_tours)}</span>
+      </div>
+      <div class="sep">·</div>
+      <div class="item">
+        <span class="label">Route</span>
+        <span class="value">{_route_value}</span>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# --- Optimization panel (PRIMARY) ----------------------------------------- #
+st.markdown(
+    """
+    <div class="section-head">
+      <h2>Optimale Tourenkette berechnen</h2>
+      <p class="lede">Anreise · Touren · Transfers · Rückreise – als ein durchgehender Tagesplan.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+def _parse_hhmm(s: str, fallback: time) -> tuple[time, bool]:
+    """Parse 'HH:MM' (forgiving: '4:00', '4:5', '04:05'). Returns (time, is_valid)."""
+    s = (s or "").strip()
+    if ":" in s:
+        try:
+            h_str, m_str = s.split(":", 1)
+            h, mi = int(h_str), int(m_str)
+            if 0 <= h <= 23 and 0 <= mi <= 59:
+                return time(h, mi), True
+        except (ValueError, IndexError):
+            pass
+    return fallback, False
+
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    _dep_str = st.text_input(
+        "Früheste Abfahrt",
+        value="04:00",
+        placeholder="HH:MM",
+        help="Frühester Start zuhause — Format HH:MM, z. B. 04:00",
+    )
+    dep_time, _dep_ok = _parse_hhmm(_dep_str, time(4, 0))
+    if not _dep_ok and _dep_str.strip():
+        st.caption(":red[Bitte HH:MM eingeben — z. B. 04:00]")
+with col2:
+    _ret_str = st.text_input(
+        "Späteste Rückkehr",
+        value="23:59",
+        placeholder="HH:MM",
+        help="Spätestes Eintreffen am Zielbahnhof — Format HH:MM, z. B. 23:59",
+    )
+    ret_time, _ret_ok = _parse_hhmm(_ret_str, time(23, 59))
+    if not _ret_ok and _ret_str.strip():
+        st.caption(":red[Bitte HH:MM eingeben — z. B. 23:59]")
+with col3:
+    max_gap_minutes = st.number_input(
+        "Max. Pause zwischen Touren (Min.)",
+        min_value=10,
+        max_value=1440,
+        value=60,
+        step=10,
+        help="Maximale Zeit zwischen Ende einer Tour und Beginn der nächsten (inkl. Leerfahrt)",
+    )
+
+if st.button(
+    "Optimale Route berechnen",
+    type="primary",
+    use_container_width=True,
+    disabled=not day_tours or not home_station,
+):
+    earliest = datetime.combine(selected_date, dep_time)
+    latest = datetime.combine(selected_date, ret_time)
+    if latest <= earliest:
+        latest += timedelta(days=1)
+
+    progress_bar = st.progress(0, text="Starte Optimierung...")
+    log_messages: list[str] = []
+
+    def progress_cb(pct: float, msg: str):
+        progress_bar.progress(min(pct, 1.0), text=msg)
+        log_messages.append(msg)
+
+    _opt_exc: Exception | None = None
+    try:
+        plan = optimize_day(
+            tours=day_tours,
+            home_station=home_station,
+            dest_station=dest_station,
+            earliest_departure=earliest,
+            latest_return=latest,
+            progress_callback=progress_cb,
+            max_transfer_gap_hours=max_gap_minutes / 60,
+        )
+    except Exception as e:
+        plan = DayPlan()
+        _opt_exc = e
+
+    progress_bar.empty()
+    st.session_state.last_plan = plan
+    st.session_state.last_plan_log = log_messages
+
+    if _opt_exc is not None:
+        _report_error(
+            "Optimierung fehlgeschlagen",
+            details=(
+                f"Datum: {selected_date.strftime('%d.%m.%Y')}\n"
+                f"Route: {home_station} → "
+                f"{home_station if same_station else dest_station}\n"
+                f"Touren am Tag: {len(day_tours)}\n"
+                f"Fenster: {dep_time:%H:%M}–{ret_time:%H:%M}, "
+                f"max. Pause: {max_gap_minutes} Min\n"
+                f"Letzter Schritt: {(log_messages[-1] if log_messages else '—')}"
+            ),
+            exc=_opt_exc,
+        )
+
+# --- Result area ---------------------------------------------------------- #
+_plan = st.session_state.last_plan
+if _plan is None:
+    if not day_tours:
+        st.markdown(
+            f"""
+            <div class="empty-result">
+              <strong>Keine Touren am {_day_label.split('·')[1].strip()}.</strong>
+              <span class="hint">Wähle ein anderes Datum oder lade die Touren neu.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    elif not home_station:
+        st.markdown(
+            """
+            <div class="empty-result">
+              <strong>Abfahrtsbahnhof fehlt.</strong>
+              <span class="hint">Trage den Bahnhof in der Sidebar ein.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """
+            <div class="empty-result">
+              Klicke <strong>Optimale Route berechnen</strong>,
+              um die einträglichste Tourenkette für den ausgewählten Tag zu finden.
+              <span class="hint">Die Berechnung prüft Anreise, Transfers und Rückreise mit Google Maps Transit.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+elif _plan.num_tours == 0:
+    st.warning(
+        "Keine gültige Tourenkette gefunden. Versuche:\n"
+        "- Früheste Abfahrt vorverlegen\n"
+        "- Späteste Rückkehr nach hinten schieben\n"
+        "- Anderen Start-/Zielbahnhof wählen"
+    )
+    if st.session_state.last_plan_log:
+        with st.expander("Optimierungsdetails"):
+            for msg in st.session_state.last_plan_log:
+                st.text(msg)
+else:
+    _render_result(_plan)
+    if st.session_state.last_plan_log:
+        with st.expander("Optimierungsdetails"):
+            for msg in st.session_state.last_plan_log:
+                st.text(msg)
+
+
+# --- Tour browser (SECONDARY, collapsed) ---------------------------------- #
+with st.expander(f"Alle verfügbaren Touren  ·  {len(tours)} insgesamt", expanded=True):
     df = pd.DataFrame([
         {
             "Tour-Nr": t.tour_nr,
@@ -349,7 +782,6 @@ with tab_overview:
         for t in tours
     ])
 
-    # Filter
     col_f1, col_f2 = st.columns(2)
     with col_f1:
         min_euro = st.number_input("Min. Euro", value=0.0, step=5.0)
@@ -372,88 +804,7 @@ with tab_overview:
         height=min(600, 35 * len(filtered) + 38),
         hide_index=True,
     )
-
     st.caption(f"{len(filtered)} von {len(df)} Touren angezeigt")
-
-
-# ---------------------------------------------------------------------------
-# Tab 2: Optimierung
-# ---------------------------------------------------------------------------
-
-with tab_optimize:
-    st.subheader("Optimale Tourenkette berechnen")
-
-    day_tours = [t for t in tours if t.date == selected_date]
-
-    st.caption(f"{len(day_tours)} Touren am {selected_date.strftime('%d.%m.%Y')} verfügbar")
-    if same_station:
-        st.info(f"Route: **{home_station}** → Touren → **{home_station}**")
-    else:
-        st.info(f"Route: **{home_station}** → Touren → **{dest_station}**")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        dep_time = st.time_input("Früheste Abfahrt", value=time(4, 0))
-    with col2:
-        ret_time = st.time_input("Späteste Rückkehr", value=time(23, 59))
-    with col3:
-        max_gap_minutes = st.number_input(
-            "Max. Pause zwischen Touren (Min.)",
-            min_value=10,
-            max_value=1440,
-            value=60,
-            step=10,
-            help="Maximale Zeit zwischen Ende einer Tour und Beginn der nächsten (inkl. Leerfahrt)",
-        )
-
-    # Optimierung starten
-    st.divider()
-
-    if st.button("Optimale Route berechnen", type="primary", use_container_width=True):
-        if not day_tours:
-            st.error("Keine Touren für diesen Tag verfügbar!")
-        elif not home_station:
-            st.error("Bitte Abfahrtsbahnhof eingeben!")
-        else:
-            earliest = datetime.combine(selected_date, dep_time)
-            latest = datetime.combine(selected_date, ret_time)
-            # Wenn Rückkehr vor Abfahrt → nächster Tag
-            if latest <= earliest:
-                latest += timedelta(days=1)
-
-            progress_bar = st.progress(0, text="Starte Optimierung...")
-            log_messages: list[str] = []
-
-            def progress_cb(pct: float, msg: str):
-                progress_bar.progress(min(pct, 1.0), text=msg)
-                log_messages.append(msg)
-
-            plan = optimize_day(
-                tours=day_tours,
-                home_station=home_station,
-                dest_station=dest_station,
-                earliest_departure=earliest,
-                latest_return=latest,
-                progress_callback=progress_cb,
-                max_transfer_gap_hours=max_gap_minutes / 60,
-            )
-
-            progress_bar.empty()
-
-            # Optimierungsdetails anzeigen
-            with st.expander("Optimierungsdetails"):
-                for msg in log_messages:
-                    st.text(msg)
-
-            if plan.num_tours == 0:
-                st.warning(
-                    "Keine gültige Tourenkette gefunden. Versuche:\n"
-                    "- Früheste Abfahrt vorverlegen\n"
-                    "- Späteste Rückkehr nach hinten schieben\n"
-                    "- Anderen Start-/Zielbahnhof wählen"
-                )
-            else:
-                _render_result(plan)
 
 
 # ---------------------------------------------------------------------------
@@ -486,15 +837,26 @@ with st.sidebar.expander(f"Über / Update — v{current_version()}"):
             else:
                 if st.button("Aktualisieren", type="primary", use_container_width=True):
                     progress = st.progress(0.0, text="Lade Update...")
+                    _update_exc: Exception | None = None
                     try:
                         download_update(release, progress=lambda p: progress.progress(p))
-                        progress.empty()
+                    except Exception as e:
+                        _update_exc = e
+                    progress.empty()
+                    if _update_exc is None:
                         st.session_state.update_staged = True
                         st.success("Update geladen. Bitte App neu starten.")
                         st.rerun()
-                    except Exception as e:
-                        progress.empty()
-                        st.error(f"Update fehlgeschlagen: {e}")
+                    else:
+                        _report_error(
+                            "Update-Download fehlgeschlagen",
+                            details=(
+                                f"Aktuelle Version: {current_version()}\n"
+                                f"Ziel-Version: {release.tag}\n"
+                                f"Asset-URL: {release.asset_url}"
+                            ),
+                            exc=_update_exc,
+                        )
         else:
             st.caption("Auf neuestem Stand ✓")
 

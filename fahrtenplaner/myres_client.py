@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json as json_mod
 import re
 from datetime import date, time, timedelta
 from pathlib import Path
@@ -225,6 +224,8 @@ class MyRESClient:
         if not self._logged_in:
             raise RuntimeError("Nicht eingeloggt.")
 
+        self._last_error = ""  # reset stale errors
+
         # 1. Seite initialisieren (setzt Server-Session-State)
         date_from_str = date_from.strftime("%d.%m.%Y")
         date_to_str = date_to.strftime("%d.%m.%Y")
@@ -233,7 +234,17 @@ class MyRESClient:
             f"{self.BASE_URL}/index.php?action=freie-touren"
             f"&datum_von={date_from_str}&datum_bis={date_to_str}"
         )
-        self._session.get(init_url, timeout=30)
+        init_resp = self._session.get(init_url, timeout=30)
+
+        # If the init response is the login page, the session expired.
+        if self._is_login_page(init_resp.text):
+            self._logged_in = False
+            self._last_error = "Sitzung abgelaufen — bitte neu anmelden"
+            logger.error(
+                "MyRES init returned login page (HTTP %s); session expired",
+                init_resp.status_code,
+            )
+            return []
 
         # 2. DataTables AJAX-Request bauen
         state_ids = [self.STATE_IDS[s] for s in states if s in self.STATE_IDS]
@@ -272,13 +283,56 @@ class MyRESClient:
         # 3. JSON parsen
         try:
             data = resp.json()
-        except (json_mod.JSONDecodeError, ValueError) as e:
-            logger.error("MyRES fetch_free_tours JSON parse failed: %s: %s", type(e).__name__, e)
-            self._last_error = "Ungültige Antwort vom Server"
+        except ValueError as e:
+            # JSONDecodeError is a ValueError subclass, so this catches both.
+            self._classify_non_json_response(resp, e)
             return []
 
         records = data.get("data", [])
         return [t for t in (self._json_to_tour(r) for r in records) if t is not None]
+
+    @staticmethod
+    def _is_login_page(body: str) -> bool:
+        """Heuristic: response body looks like the MyRES login HTML."""
+        if not body:
+            return False
+        lower = body.lower()
+        return (
+            ("benutzername" in lower and "passwort" in lower)
+            or "action=login" in lower
+        )
+
+    def _classify_non_json_response(self, resp, exc: Exception) -> None:
+        """Set self._last_error with a useful diagnosis for non-JSON responses."""
+        body = resp.text or ""
+        body_preview = body[:500].replace("\n", " ")
+        ct = resp.headers.get("content-type", "?")
+        logger.error(
+            "MyRES fetch_free_tours JSON parse failed: %s | HTTP %s | Content-Type: %s | body: %r",
+            type(exc).__name__, resp.status_code, ct, body_preview,
+        )
+
+        if self._is_login_page(body):
+            self._logged_in = False
+            self._last_error = "Sitzung abgelaufen — bitte neu anmelden"
+            return
+
+        lower = body.lower().lstrip()
+        if lower.startswith("<!doctype") or lower.startswith("<html") or "<html" in lower[:100]:
+            self._last_error = (
+                f"Server lieferte HTML statt JSON (HTTP {resp.status_code}). "
+                f"Vermutlich WAF-Block oder Wartungsseite."
+            )
+            return
+
+        if not body.strip():
+            self._last_error = f"Leere Antwort vom Server (HTTP {resp.status_code})"
+            return
+
+        self._last_error = (
+            f"Ungültige Antwort (HTTP {resp.status_code}, "
+            f"Content-Type: {ct}): {body_preview[:120]}"
+        )
 
     def _json_to_tour(self, rec: dict) -> Optional[Tour]:
         """Konvertiert einen JSON-Record in ein Tour-Objekt."""

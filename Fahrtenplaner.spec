@@ -12,7 +12,7 @@ binaries = []
 hiddenimports = []
 
 # Streamlit: dynamic imports + bundled static + metadata.
-for pkg in ["streamlit", "streamlit_authenticator"]:
+for pkg in ["streamlit"]:
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
@@ -21,7 +21,6 @@ for pkg in ["streamlit", "streamlit_authenticator"]:
 # Metadata that some libraries probe at runtime.
 for pkg in [
     "streamlit",
-    "streamlit_authenticator",
     "pandas",
     "openpyxl",
     "googlemaps",

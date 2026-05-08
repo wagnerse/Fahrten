@@ -71,9 +71,9 @@ Same-station and time-impossible pairs are skipped before any API call — this 
 
 `lookup_station` queries `region="de"` (a *bias*, not a restriction) and tries `"<name> Bahnhof"` before falling back to `<name>`. Earlier code appended `"Deutschland"` and broke for Polish border stations like Szczecin Główny / Świnoujście — see `tests/test_db_client.py::TestCrossBorderStations`. Don't reintroduce the `"Deutschland"` suffix.
 
-### Auth gate
+### No auth
 
-If `[auth]` is present in `.streamlit/secrets.toml`, `streamlit-authenticator` gates the app; otherwise the app is open. The `_to_plain` helper exists because `st.secrets` returns proxy objects that `streamlit-authenticator` cannot consume directly.
+The app is shipped as a single-user Windows desktop binary, so there's no auth gate. An earlier version used `streamlit-authenticator` keyed off an `[auth]` block in `secrets.toml` — that code (and the `streamlit-authenticator` dep) was removed once desktop-only was locked in. Stale `[auth]` blocks in a local `secrets.toml` are harmless; Streamlit just ignores them.
 
 ## Configuration
 

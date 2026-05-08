@@ -284,6 +284,45 @@ h3, .stMarkdown h3 { font-size: 1.05rem; margin: 1.0rem 0 0.5rem; }
     border: 0 !important;
 }
 
+/* --- Time-picker button (clock icon inside stTimeInput) ----------------- */
+[data-testid="stTimeInput"] button {
+    background: transparent !important;
+    border: 0 !important;
+    color: var(--sub) !important;
+    cursor: pointer;
+    padding: 0.3rem 0.5rem !important;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    transition: color 140ms ease, background 140ms ease;
+}
+[data-testid="stTimeInput"] button:hover {
+    color: var(--ink) !important;
+    background: var(--surface-2) !important;
+}
+[data-testid="stTimeInput"] button svg {
+    width: 18px !important;
+    height: 18px !important;
+}
+
+/* Time-picker dropdown popup (BaseWeb popover) */
+[data-baseweb="popover"] [data-baseweb="menu"] {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius) !important;
+    box-shadow: var(--shadow-lg) !important;
+    font-family: var(--mono) !important;
+    font-variant-numeric: tabular-nums;
+}
+[data-baseweb="popover"] [data-baseweb="menu"] li {
+    font-family: var(--mono) !important;
+    font-size: 0.92rem !important;
+    color: var(--ink-soft) !important;
+}
+[data-baseweb="popover"] [data-baseweb="menu"] li:hover,
+[data-baseweb="popover"] [data-baseweb="menu"] li[aria-selected="true"] {
+    background: var(--surface-2) !important;
+    color: var(--ink) !important;
+}
+
 /* Multiselect tags */
 [data-baseweb="tag"] {
     background: var(--surface-3) !important;
@@ -584,6 +623,157 @@ code, pre, kbd {
     border: 0;
     border-top: 1px solid var(--border);
     margin: 1.6rem 0;
+}
+
+/* --- Plan-context strip --------------------------------------------------- */
+.plan-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem 1.0rem;
+    padding: 0.75rem 1.05rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin: 0.4rem 0 1.6rem;
+    box-shadow: var(--shadow-xs);
+    position: relative;
+    overflow: hidden;
+    animation: fade-up 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: 60ms;
+}
+.plan-strip::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 2px;
+    background: var(--accent);
+}
+.plan-strip .item {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.5rem;
+}
+.plan-strip .label {
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--sub);
+}
+.plan-strip .value {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.92rem;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: -0.005em;
+}
+.plan-strip .value .arrow {
+    color: var(--accent);
+    margin: 0 0.3em;
+    font-weight: 600;
+}
+.plan-strip .sep {
+    color: var(--border);
+    font-size: 0.95rem;
+    user-select: none;
+}
+
+/* --- Section heading (replaces the old tab subheaders) ------------------- */
+.section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    margin: 0.4rem 0 1.0rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.6rem;
+}
+.section-head h2 {
+    margin: 0;
+    font-size: 1.45rem;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+}
+.section-head .lede {
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    color: var(--sub);
+    margin: 0;
+}
+
+/* --- Empty result state --------------------------------------------------- */
+.empty-result {
+    background: var(--surface);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 1.6rem 1.4rem;
+    margin: 0.8rem 0;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 0.95rem;
+    line-height: 1.55;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+}
+.empty-result::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(60% 100% at 50% 0%, var(--accent-soft), transparent 70%);
+    opacity: 0.5;
+    pointer-events: none;
+}
+.empty-result strong {
+    color: var(--ink);
+    font-weight: 600;
+}
+.empty-result .hint {
+    display: block;
+    font-size: 0.82rem;
+    color: var(--sub);
+    margin-top: 0.45rem;
+}
+
+/* --- Map legend + frame --------------------------------------------------- */
+.map-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1.4rem;
+    padding: 0.55rem 1.0rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-bottom: 0;
+    border-radius: var(--radius) var(--radius) 0 0;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+}
+.map-legend .leg {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.map-legend .leg .bar {
+    width: 22px;
+    height: 3px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+
+/* PyDeck chart frame: continues the legend's borders into a unified block */
+[data-testid="stPydeckChart"],
+[data-testid="stDeckGlJsonChart"] {
+    border: 1px solid var(--border);
+    border-top: 0;
+    border-radius: 0 0 var(--radius) var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow-xs);
+    margin-bottom: 0.4rem;
 }
 
 /* --- Sidebar buttons: full width feels modern ---------------------------- */

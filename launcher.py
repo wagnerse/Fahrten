@@ -46,7 +46,7 @@ def _bake_build_env() -> None:
 # Child-process mode: run Streamlit on this process's main thread.
 # --------------------------------------------------------------------------- #
 
-def _run_streamlit_server(port: int) -> int:
+def _run_streamlit_server(port: int, dev: bool = False) -> int:
     _ensure_paths_on_syspath()
     _bake_build_env()
 
@@ -57,7 +57,7 @@ def _run_streamlit_server(port: int) -> int:
         "server.headless": True,
         "server.port": port,
         "server.address": "127.0.0.1",
-        "server.runOnSave": False,
+        "server.runOnSave": dev,
         "browser.gatherUsageStats": False,
         "global.developmentMode": False,
     }
@@ -91,11 +91,12 @@ def _wait_for_server(url: str, timeout: float = 30.0) -> bool:
     return False
 
 
-def _spawn_streamlit_child(port: int) -> subprocess.Popen:
+def _spawn_streamlit_child(port: int, dev: bool = False) -> subprocess.Popen:
+    extra = ["--dev"] if dev else []
     if getattr(sys, "frozen", False):
-        cmd = [sys.executable, "--streamlit-server", "--port", str(port)]
+        cmd = [sys.executable, "--streamlit-server", "--port", str(port), *extra]
     else:
-        cmd = [sys.executable, sys.argv[0], "--streamlit-server", "--port", str(port)]
+        cmd = [sys.executable, sys.argv[0], "--streamlit-server", "--port", str(port), *extra]
 
     creationflags = 0
     if sys.platform == "win32":
@@ -104,18 +105,19 @@ def _spawn_streamlit_child(port: int) -> subprocess.Popen:
     return subprocess.Popen(cmd, creationflags=creationflags, close_fds=True)
 
 
-def _run_parent() -> int:
+def _run_parent(dev: bool = False) -> int:
     _ensure_paths_on_syspath()
     from fahrtenplaner import updater
 
-    if updater.apply_pending_update_if_any():
+    # Don't apply pending updates while iterating in dev mode.
+    if not dev and updater.apply_pending_update_if_any():
         subprocess.Popen([sys.executable], close_fds=True)
         return 0
 
     port = _free_port(8501)
     url = f"http://127.0.0.1:{port}"
 
-    child = _spawn_streamlit_child(port)
+    child = _spawn_streamlit_child(port, dev=dev)
     try:
         if not _wait_for_server(url):
             sys.stderr.write("Streamlit-Server konnte nicht gestartet werden.\n")
@@ -123,9 +125,10 @@ def _run_parent() -> int:
 
         import webview
 
-        title = f"Fahrtenplaner {updater.current_version()}"
+        suffix = " — Dev" if dev else ""
+        title = f"Fahrtenplaner {updater.current_version()}{suffix}"
         webview.create_window(title, url, width=1400, height=900, min_size=(900, 600))
-        webview.start()
+        webview.start(debug=dev)
         return 0
     finally:
         try:
@@ -146,11 +149,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--streamlit-server", action="store_true")
     parser.add_argument("--port", type=int, default=8501)
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="Auto-reload on .py changes; right-click → Inspect available; update check skipped.",
+    )
     args, _ = parser.parse_known_args(argv)
 
     if args.streamlit_server:
-        return _run_streamlit_server(args.port)
-    return _run_parent()
+        return _run_streamlit_server(args.port, dev=args.dev)
+    return _run_parent(dev=args.dev)
 
 
 if __name__ == "__main__":
