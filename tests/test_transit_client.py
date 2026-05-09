@@ -94,6 +94,8 @@ def clear_caches():
         transit_client._station_cache.clear()
     if hasattr(transit_client, '_connection_cache'):
         transit_client._connection_cache.clear()
+    if hasattr(transit_client, '_driving_cache'):
+        transit_client._driving_cache.clear()
 
 
 class TestLookupStation:
@@ -278,3 +280,27 @@ class TestCrossBorderStations:
 
         assert result is not None
         assert "Prenzlau" in result["name"]
+
+
+class TestDrivingInfo:
+    """driving_info returns (minutes, km) from a mocked Google Directions response."""
+
+    def test_returns_minutes_and_km(self):
+        # Mocked Directions response: 30-minute, 32-km drive
+        mock_response = [{
+            "legs": [{
+                "duration": {"value": 1800},   # seconds → 30 min
+                "distance": {"value": 32000},  # meters → 32 km
+            }]
+        }]
+        mock_client = MagicMock()
+        mock_client.directions.return_value = mock_response
+
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import driving_info
+            result = driving_info("ChIJ_home", "ChIJ_target")
+
+        assert result is not None
+        minutes, km = result
+        assert minutes == 30
+        assert km == pytest.approx(32.0, abs=0.01)

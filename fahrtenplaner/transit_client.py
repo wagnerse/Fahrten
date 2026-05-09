@@ -53,6 +53,7 @@ def _get_client() -> googlemaps.Client:
 
 _station_cache: dict[str, Optional[dict]] = {}
 _connection_cache: dict[str, Optional[Connection]] = {}
+_driving_cache: dict[str, Optional[tuple[int, float]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +147,40 @@ def find_connection(
 
     _connection_cache[cache_key] = None
     return None
+
+
+def driving_info(from_id: str, to_id: str) -> Optional[tuple[int, float]]:
+    """One-way driving time and distance between two place_ids.
+
+    Returns (minutes, km) or None if no driving route is found. Cached
+    indefinitely per (from_id, to_id) pair — drive times are stable enough.
+    """
+    cache_key = f"{from_id}|{to_id}"
+    if cache_key in _driving_cache:
+        return _driving_cache[cache_key]
+
+    try:
+        client = _get_client()
+        routes = client.directions(
+            origin=f"place_id:{from_id}",
+            destination=f"place_id:{to_id}",
+            mode="driving",
+            language="de",
+        )
+        if not routes:
+            _driving_cache[cache_key] = None
+            return None
+
+        leg = routes[0]["legs"][0]
+        seconds = int(leg["duration"]["value"])
+        meters = int(leg["distance"]["value"])
+        result = (seconds // 60, meters / 1000.0)
+        _driving_cache[cache_key] = result
+        return result
+    except Exception as e:
+        logger.error("driving_info(%s → %s) failed: %s", from_id, to_id, e)
+        _driving_cache[cache_key] = None
+        return None
 
 
 def _is_replacement_service(line_name: str, vehicle_type: str) -> bool:
