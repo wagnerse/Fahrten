@@ -802,3 +802,26 @@ code, pre, kbd {
     outline-offset: 2px;
     border-radius: 2px;
 }
+
+/* --- Car-mode drive blocks (auto-anreise / auto-rückreise) ---------------- */
+.auto-leg {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.6rem 0.9rem;
+    background: var(--surface);
+    border: 1px solid #E8DAB6;
+    border-left: 4px solid #D4A017;
+    border-radius: var(--radius-sm);
+    margin: 0.5rem 0;
+    font-family: var(--sans);
+}
+.auto-leg .icon { font-size: 1.05rem; }
+.auto-leg .label { font-weight: 600; color: var(--ink); font-size: 0.92rem; }
+.auto-leg .meta {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--sub);
+    font-size: 0.85rem;
+}
+.auto-leg .dest { margin-left: auto; font-weight: 500; color: var(--ink); }
