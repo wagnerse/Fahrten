@@ -18,7 +18,7 @@ from .errors import report_error
 from .update_panel import render_update_panel
 
 
-_BUNDESLAENDER = [
+_GERMAN_STATES = [
     "Brandenburg", "Mecklenburg-Vorpommern", "Sachsen", "Sachsen-Anhalt",
     "Thüringen", "Berlin", "Niedersachsen", "Schleswig-Holstein",
 ]
@@ -55,7 +55,7 @@ def _render_filters() -> list[str]:
     st.sidebar.markdown("### Filter")
     return st.sidebar.multiselect(
         "Bundesländer",
-        _BUNDESLAENDER,
+        _GERMAN_STATES,
         default=["Brandenburg", "Mecklenburg-Vorpommern"],
     )
 
@@ -168,7 +168,7 @@ def _render_debug_panel() -> None:
 
         if st.button("Google Maps testen"):
             try:
-                from db_client import lookup_station
+                from transit_client import lookup_station
                 result = lookup_station("Prenzlau")
                 if result:
                     st.success(f"OK: {result['name']}")

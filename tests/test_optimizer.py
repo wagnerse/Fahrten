@@ -369,36 +369,36 @@ class TestDayPlanStructure:
     """Verify DayPlan contains correct chain link types."""
 
     def test_plan_includes_travel_legs(self):
-        """Plan includes anreise and rueckreise when tour is at a remote station."""
+        """Plan includes outbound and inbound when tour is at a remote station."""
         tour = make_tour(1, "10:00", "Fern-Stadt", "11:00", "Fern-Stadt", 50.0)
-        anreise = make_leg_conn(
+        outbound = make_leg_conn(
             "Prenzlau", "2026-04-01T08:00", "Fern-Stadt", "2026-04-01T09:50", "RE3",
         )
-        rueckreise = make_leg_conn(
+        inbound = make_leg_conn(
             "Fern-Stadt", "2026-04-01T11:10", "Prenzlau", "2026-04-01T13:00", "RE3",
         )
 
         plan = run_optimizer(
             [tour],
-            home_to_tour={0: anreise},
-            tour_to_dest={0: rueckreise},
+            home_to_tour={0: outbound},
+            tour_to_dest={0: inbound},
         )
 
         assert plan.num_tours == 1
         types = [link.type for link in plan.chain]
-        assert "anreise" in types
+        assert "outbound" in types
         assert "tour" in types
-        assert "rückreise" in types
+        assert "inbound" in types
 
     def test_no_travel_legs_at_home_station(self):
-        """No anreise/rueckreise when tour starts and ends at home."""
+        """No outbound/inbound when tour starts and ends at home."""
         tour = make_tour(1, "10:00", "Prenzlau", "11:00", "Prenzlau", 50.0)
 
         plan = run_optimizer([tour])
 
         types = [link.type for link in plan.chain]
-        assert "anreise" not in types
-        assert "rückreise" not in types
+        assert "outbound" not in types
+        assert "inbound" not in types
         assert "tour" in types
 
 
@@ -464,19 +464,19 @@ class TestPrenzlauRealScenario:
           Angermünde → Prenzlau: arr ~21:45 ✓ (only ~25 min)
           Pasewalk → Prenzlau:   arr ~18:30 ✓ (only ~30 min)
         """
-        anreise_warnemu = make_leg_conn(
+        outbound_warnemu = make_leg_conn(
             "Prenzlau", "2026-04-01T07:01",
             "Warnemünde", "2026-04-01T11:48", "RE3",
         )
-        anreise_ueckermuende = make_leg_conn(
+        outbound_ueckermuende = make_leg_conn(
             "Prenzlau", "2026-04-01T15:00",
             "Ueckermünde Stadthafen", "2026-04-01T17:00", "RB",
         )
-        anreise_szczecin = make_leg_conn(
+        outbound_szczecin = make_leg_conn(
             "Prenzlau", "2026-04-01T16:00",
             "Szczecin Glowny", "2026-04-01T19:00", "RE",
         )
-        anreise_barth = make_leg_conn(
+        outbound_barth = make_leg_conn(
             "Prenzlau", "2026-04-01T14:00",
             "Barth", "2026-04-01T18:30", "RE",
         )
@@ -499,12 +499,12 @@ class TestPrenzlauRealScenario:
         )
 
         home_to_tour = {
-            17: anreise_warnemu,   # 704344 Warnemünde
-            18: anreise_warnemu,   # 704345 Warnemünde
-            20: anreise_ueckermuende,  # 705472 Ueckermünde
-            21: anreise_warnemu,   # 704208 Warnemünde
-            24: anreise_barth,     # 705877 Barth
-            25: anreise_szczecin,  # 705302 Szczecin
+            17: outbound_warnemu,   # 704344 Warnemünde
+            18: outbound_warnemu,   # 704345 Warnemünde
+            20: outbound_ueckermuende,  # 705472 Ueckermünde
+            21: outbound_warnemu,   # 704208 Warnemünde
+            24: outbound_barth,     # 705877 Barth
+            25: outbound_szczecin,  # 705302 Szczecin
         }
         tour_to_dest = {
             17: rueck_warnemu,     # 704344 ends Warnemünde
@@ -604,18 +604,18 @@ class TestAnreiseCrossBorderRegression:
     The Anreise from Prenzlau to Szczecin should be ~1.5h direct.
     """
 
-    def test_prenzlau_to_szczecin_anreise_is_direct(self):
+    def test_prenzlau_to_szczecin_outbound_is_direct(self):
         """Prenzlau → Szczecin Glowny is ~80km; Anreise must be <3h."""
         tour = make_tour(
             705302, "19:26", "Szczecin Glowny", "21:21", "Angermünde", 36.42,
         )
 
         # Realistic direct connection: ~1.5h (Prenzlau → Szczecin via RE66)
-        anreise = make_leg_conn(
+        outbound = make_leg_conn(
             "Prenzlau", "2026-04-01T17:30",
             "Szczecin Glowny", "2026-04-01T19:00", "RE66",
         )
-        rueckreise = make_leg_conn(
+        inbound = make_leg_conn(
             "Angermünde", "2026-04-01T21:30",
             "Prenzlau", "2026-04-01T21:55", "RE3",
         )
@@ -626,34 +626,34 @@ class TestAnreiseCrossBorderRegression:
             dest="Prenzlau",
             earliest="04:00",
             latest="23:59",
-            home_to_tour={0: anreise},
-            tour_to_dest={0: rueckreise},
+            home_to_tour={0: outbound},
+            tour_to_dest={0: inbound},
         )
 
         assert plan.num_tours == 1
         assert plan.tours[0].tour_nr == 705302
 
         # Verify Anreise is present and reasonable
-        anreise_links = [l for l in plan.chain if l.type == "anreise"]
-        assert len(anreise_links) == 1
-        conn = anreise_links[0].connection
+        outbound_links = [l for l in plan.chain if l.type == "outbound"]
+        assert len(outbound_links) == 1
+        conn = outbound_links[0].connection
         assert conn.duration < timedelta(hours=3), \
             f"Anreise Prenzlau→Szczecin should be <3h, got {conn.duration}"
         assert conn.transfers <= 1, \
             f"Prenzlau→Szczecin should have ≤1 transfer, got {conn.transfers}"
 
-    def test_anreise_via_erfurt_is_wrong(self):
+    def test_outbound_via_erfurt_is_wrong(self):
         """Anreise via Erfurt (5h43, 3 transfers) must NOT be the result.
 
         This is the exact bug observed: Google Maps geocoded Szczecin Glowny
         to a German location, producing a route through Berlin and Erfurt.
         """
-        tour = make_tour(
+        make_tour(
             705302, "19:26", "Szczecin Glowny", "21:21", "Angermünde", 36.42,
         )
 
         # The WRONG route observed in the bug (5h43 via Erfurt)
-        wrong_anreise = Connection(legs=[
+        wrong_outbound = Connection(legs=[
             Leg("Prenzlau", datetime(2026, 4, 1, 5, 2),
                 "Südkreuz", datetime(2026, 4, 1, 6, 47), "RE3"),
             Leg("Südkreuz", datetime(2026, 4, 1, 7, 14),
@@ -665,12 +665,12 @@ class TestAnreiseCrossBorderRegression:
         ])
 
         # This route is clearly wrong — it ends in Thuringia, not Szczecin
-        assert wrong_anreise.duration > timedelta(hours=5), \
+        assert wrong_outbound.duration > timedelta(hours=5), \
             "The buggy route was 5h43 — this test documents the wrong behavior"
-        assert wrong_anreise.transfers == 3, \
+        assert wrong_outbound.transfers == 3, \
             "The buggy route had 3 transfers"
         # The route doesn't even arrive at Szczecin!
-        assert wrong_anreise.legs[-1].arrival_station != "Szczecin Glowny", \
+        assert wrong_outbound.legs[-1].arrival_station != "Szczecin Glowny", \
             "Bug: route ended at Oberdorla, not Szczecin Glowny"
 
 

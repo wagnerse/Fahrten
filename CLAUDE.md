@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. Fetches the list of available unbooked tours from **MyRES 3** (`res.ivv-berlin.de`) for a given day and set of Bundesländer, with a local Excel file as offline fallback.
 2. For a chosen home/destination station, computes the **highest-revenue chain of tours** that's actually reachable by public transit (Anreise → Tour → Transfer → Tour → ... → Rückreise).
 
-The UI, comments, and many identifiers are in German. Keep that style when editing.
+**Language policy:** UI strings and user-facing labels stay in German (`"🚉 Anreise"`, `"Optimale Route berechnen"`, `"Frühste Abfahrt"`, etc. — the audience is German). Internal identifiers — variable names, function names, `ChainLink.type` discriminator strings — use English. The mapping for the chain-link types: `"outbound"` (Anreise / home → first tour), `"inbound"` (Rückreise / last tour → destination), `"tour"`, `"transfer"`. Comments may be German or English; prefer English for new code.
 
 ## Commands
 
@@ -27,22 +27,50 @@ starten.bat
 uv run --with pytest pytest tests/
 uv run --with pytest pytest tests/test_optimizer.py -v                    # one file
 uv run --with pytest pytest tests/test_optimizer.py::TestChaining -v      # one class
-uv run --with pytest pytest tests/test_db_client.py::TestStationsMatch::test_hbf_suffix  # one test
+uv run --with pytest pytest tests/test_transit_client.py::TestStationsMatch::test_hbf_suffix  # one test
 ```
 
 There is no linter or formatter configured.
 
 ## Architecture
 
-Four modules in `fahrtenplaner/` form a strict dependency order:
+The package is organized as a thin orchestrator (`app.py`) plus three layers:
+**business logic** (top-level modules), **UI** (the `ui/` subpackage), and **packaging**
+(`launcher.py`, `updater.py`).
 
 ```
-app.py            (Streamlit UI, session state, auth gate, rendering)
-   └─→ optimizer.py        (3-phase reachability + DAG-longest-path DP)
-         └─→ db_client.py  (Google Maps geocoding + transit Directions)
-   └─→ myres_client.py     (MyRES login + Excel fallback)
-         └─→ models.py     (Tour, Connection, Leg, ChainLink, DayPlan dataclasses)
+fahrtenplaner/
+├── app.py                  ← thin Streamlit entry: page config → state init →
+│                             sidebar render → hero render → optimization render
+├── models.py               ← Tour, Connection, Leg, ChainLink, DayPlan dataclasses
+├── optimizer.py            ← 3-phase reachability + DAG-longest-path DP
+├── transit_client.py            ← Google Maps geocoding + transit Directions (cached)
+├── myres_client.py         ← MyRES login + Excel fallback
+├── updater.py              ← GitHub Releases version check + staged self-update
+├── _build_config.py        ← CI-generated, contains the embedded GMaps API key
+└── ui/
+    ├── styles.py           ← apply_page_config, inject_css (mtime-keyed cache)
+    ├── state.py            ← init_session_state (idempotent on reruns)
+    ├── errors.py           ← report_error → @st.dialog with a copyable code block
+    ├── hero.py             ← render_hero (the "Fahrten*planer*" wordmark)
+    ├── sidebar.py          ← render_sidebar; returns SidebarContext dataclass
+    ├── update_panel.py     ← sidebar Über/Update widget (called by sidebar)
+    ├── optimization.py     ← render_optimization_section: plan-strip + inputs +
+    │                         button + result + tour browser (the main pane)
+    ├── render.py           ← render_result, _render_tour_block, _render_connection_block
+    └── map.py              ← render_route_map (Carto basemap + colored line layer)
 ```
+
+Dependency rules between layers:
+
+- **`ui/` modules** may import from each other (`from .errors import …`,
+  `from .render import …`) and from any top-level module (`from optimizer import …`,
+  `from models import …`). They never import from `app.py`.
+- **Top-level business modules** (`optimizer.py`, `transit_client.py`, etc.) have **zero
+  Streamlit imports**. They're framework-agnostic and fully test-covered. Don't add
+  `import streamlit` anywhere outside `ui/` or `app.py`.
+- **`app.py`** is a 48-line orchestrator. If you find yourself adding more than ~5
+  lines of UI logic to it, that logic belongs in a `ui/` module instead.
 
 ### The optimizer (`optimizer.py::optimize_day`)
 
@@ -57,7 +85,7 @@ Same-station and time-impossible pairs are skipped before any API call — this 
 
 ### Caching and rate limits
 
-`db_client.py` keeps **module-level dicts** `_station_cache` and `_connection_cache` (and a singleton `_gmaps`). They survive across Streamlit reruns *within the same process* but reset on worker restart. This is intentional — do NOT swap them for `@st.cache_data`, which had been used previously and caused subtle bugs around `st.secrets` access during cold start. There is currently no rate limiter; Google Maps quotas are the constraint.
+`transit_client.py` keeps **module-level dicts** `_station_cache` and `_connection_cache` (and a singleton `_gmaps`). They survive across Streamlit reruns *within the same process* but reset on worker restart. This is intentional — do NOT swap them for `@st.cache_data`, which had been used previously and caused subtle bugs around `st.secrets` access during cold start. There is currently no rate limiter; Google Maps quotas are the constraint.
 
 ### MyRES integration
 
@@ -65,11 +93,11 @@ Same-station and time-impossible pairs are skipped before any API call — this 
 
 ### Station name matching
 
-`db_client.py::stations_match` is fuzzy: lowercase + strip parenthetical suffixes + strip `hbf`/`hauptbahnhof`/`bf` + substring containment + `SequenceMatcher > 0.90`. The optimizer relies on this in two places (skipping same-station Anreise/Rückreise and the same-station transfer prune). If you tighten or rewrite this logic, run the full optimizer test suite — several tests depend on the current matching semantics.
+`transit_client.py::stations_match` is fuzzy: lowercase + strip parenthetical suffixes + strip `hbf`/`hauptbahnhof`/`bf` + substring containment + `SequenceMatcher > 0.90`. The optimizer relies on this in two places (skipping same-station Anreise/Rückreise and the same-station transfer prune). If you tighten or rewrite this logic, run the full optimizer test suite — several tests depend on the current matching semantics.
 
 ### Geocoding cross-border stations
 
-`lookup_station` queries `region="de"` (a *bias*, not a restriction) and tries `"<name> Bahnhof"` before falling back to `<name>`. Earlier code appended `"Deutschland"` and broke for Polish border stations like Szczecin Główny / Świnoujście — see `tests/test_db_client.py::TestCrossBorderStations`. Don't reintroduce the `"Deutschland"` suffix.
+`lookup_station` queries `region="de"` (a *bias*, not a restriction) and tries `"<name> Bahnhof"` before falling back to `<name>`. Earlier code appended `"Deutschland"` and broke for Polish border stations like Szczecin Główny / Świnoujście — see `tests/test_transit_client.py::TestCrossBorderStations`. Don't reintroduce the `"Deutschland"` suffix.
 
 ### No auth
 
@@ -77,7 +105,7 @@ The app is shipped as a single-user Windows desktop binary, so there's no auth g
 
 ## Configuration
 
-- `GOOGLE_MAPS_API_KEY` — required. Read from `st.secrets` first, then env var. The app degrades to an error in `db_client.py::_get_client` without it.
+- `GOOGLE_MAPS_API_KEY` — required. Read from `st.secrets` first, then env var. The app degrades to an error in `transit_client.py::_get_client` without it.
 - `[myres]` block in `secrets.toml` (optional) — pre-fills login fields.
 - `[auth]` block in `secrets.toml` (optional) — enables login gate.
 - `.streamlit/secrets.toml` is gitignored. Never commit it.
@@ -96,11 +124,38 @@ The app is shipped as a single-user Windows desktop binary, so there's no auth g
 
 ## Files to know
 
-- `fahrtenplaner/app.py` — Streamlit UI, sidebar inputs, two tabs ("Touren-Übersicht", "Optimierung"). Top of file does `sys.path.insert` so the package modules import flat.
+**Entry / orchestration:**
+- `fahrtenplaner/app.py` — 48-line orchestrator. `sys.path.insert` so `from ui.* import …` and bare `from optimizer import …` both resolve.
+
+**Business logic (no Streamlit imports — fully test-covered):**
 - `fahrtenplaner/optimizer.py` — `optimize_day()` and the constants (`MIN_TRANSFER_MINUTES = 5`, `TIGHT_TRANSFER_MINUTES = 15` for warnings).
-- `fahrtenplaner/db_client.py` — Google Maps geocoding (`lookup_station`, `batch_lookup_stations`) and transit routing (`find_connection`, `check_reachability_with_ids`).
-- `fahrtenplaner/myres_client.py` — `MyRESClient` (live) plus `load_tours_from_excel` (fallback). Excel parsing tolerates column-name variations via regex in `_detect_columns`.
-- `tests/` — pytest, fully mocked. `test_optimizer.py` builds tours with `make_tour()` and patches `db_client` reachability/lookup; `test_db_client.py` patches `googlemaps.Client`.
+- `fahrtenplaner/transit_client.py` — Google Maps geocoding (`lookup_station`, `batch_lookup_stations`) and transit routing (`find_connection`, `check_reachability_with_ids`).
+- `fahrtenplaner/myres_client.py` — `MyRESClient` (live) plus `load_tours_from_excel` (fallback). Excel parsing tolerates column-name variations via regex in `_detect_columns`. Non-JSON responses are classified by `_classify_non_json_response` (login-page / WAF-block / empty / malformed).
+- `fahrtenplaner/models.py` — `Tour`, `Connection`, `Leg`, `ChainLink`, `DayPlan` dataclasses.
+
+**UI (lives in `ui/`, all Streamlit-aware):**
+- `ui/sidebar.py` — entry: `render_sidebar()`. Returns `SidebarContext(selected_date, home_station, dest_station, same_station)`. Owns the MyRES login flow including `_handle_load_tours` which routes failures through `errors.report_error`.
+- `ui/optimization.py` — entry: `render_optimization_section(tours, ctx)`. The main pane: plan-strip → section heading → param inputs → primary button → result → tour browser expander. Includes `_parse_hhmm` (forgiving HH:MM parser).
+- `ui/render.py` — entry: `render_result(plan)`. Renders metrics + toggleable map + tour/connection blocks + summary table.
+- `ui/map.py` — entry: `render_route_map(plan)`. PyDeck LineLayer, Carto basemap, Verkehrsrot for tour segments and slate for outbound/inbound.
+- `ui/errors.py` — entry: `report_error(title, details, exc)`. Opens `@st.dialog` with a copyable `st.code()` block — Dad clicks the clipboard icon and forwards.
+- `ui/update_panel.py` — entry: `render_update_panel()`. The sidebar Über/Update widget that checks GitHub Releases and stages downloads.
+- `ui/styles.py`, `ui/state.py`, `ui/hero.py` — small helpers (page config + CSS, session-state init, wordmark).
+
+**Packaging:**
+- `launcher.py` — pywebview wrapper at the repo root. Spawns Streamlit as a child process (Streamlit's signal handler requires the main thread of its process), waits for the port, opens a chromeless WebView2 window. `--dev` enables `runOnSave`.
+- `updater.py` — version check, staged download, pre-launch swap (rename old `.exe` → `.exe.old`, rename new in place, re-exec).
+
+**Tests:**
+- `tests/` — pytest, fully mocked. `test_optimizer.py` builds tours with `make_tour()` and patches `transit_client` reachability/lookup; `test_transit_client.py` patches `googlemaps.Client`. UI is not directly test-covered.
+
+## Where to add new code
+
+- **A new sidebar widget** → new `_render_*` helper inside `ui/sidebar.py`, called from `render_sidebar()`.
+- **A new section in the main pane** → new function in `ui/optimization.py` (or a new module if substantial).
+- **A new visualization of the result** → new module in `ui/`, called from `ui/render.py::render_result`.
+- **A new optimizer constraint** → modify `optimize_day` in `optimizer.py` (no UI change unless you also surface a new input — that goes in `ui/optimization.py`).
+- **A new external API** → new client module at `fahrtenplaner/<name>_client.py` parallel to `myres_client.py`. Keep Streamlit out of it.
 
 ## ⚠️ Stale planning docs
 

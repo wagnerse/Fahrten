@@ -148,57 +148,48 @@ def find_connection(
     return None
 
 
+def _is_replacement_service(line_name: str, vehicle_type: str) -> bool:
+    """A bus line whose name contains SEV/ERSATZ is a Schienenersatzverkehr."""
+    if vehicle_type != "BUS":
+        return False
+    upper = line_name.upper()
+    return any(kw in upper for kw in ("SEV", "ERSATZ"))
+
+
+def _parse_transit_step(step: dict) -> Optional[Leg]:
+    """Parse a single Google Maps step into a Leg, or return None if it's not transit."""
+    if step.get("travel_mode") != "TRANSIT":
+        return None
+
+    td = step.get("transit_details") or {}
+    dep_ts = td.get("departure_time", {}).get("value")
+    arr_ts = td.get("arrival_time", {}).get("value")
+    if not dep_ts or not arr_ts:
+        return None
+
+    line_info = td.get("line", {})
+    line_name = line_info.get("short_name") or line_info.get("name") or "?"
+    vehicle_type = line_info.get("vehicle", {}).get("type", "")
+
+    return Leg(
+        departure_station=td.get("departure_stop", {}).get("name", "?"),
+        departure_time=datetime.fromtimestamp(dep_ts),
+        arrival_station=td.get("arrival_stop", {}).get("name", "?"),
+        arrival_time=datetime.fromtimestamp(arr_ts),
+        line=line_name,
+        is_replacement_service=_is_replacement_service(line_name, vehicle_type),
+    )
+
+
 def _parse_route(route: dict) -> Optional[Connection]:
     """Parse a Google Maps route into a Connection with transit Legs."""
-    legs_data = route.get("legs", [])
-    if not legs_data:
-        return None
-
     parsed_legs: list[Leg] = []
-
-    for leg in legs_data:
+    for leg in route.get("legs", []):
         for step in leg.get("steps", []):
-            if step.get("travel_mode") != "TRANSIT":
-                continue
-
-            td = step.get("transit_details", {})
-            if not td:
-                continue
-
-            dep_ts = td.get("departure_time", {}).get("value")
-            arr_ts = td.get("arrival_time", {}).get("value")
-            if not dep_ts or not arr_ts:
-                continue
-
-            dep_time = datetime.fromtimestamp(dep_ts)
-            arr_time = datetime.fromtimestamp(arr_ts)
-
-            line_info = td.get("line", {})
-            line_name = line_info.get("short_name", line_info.get("name", "?"))
-
-            dep_stop = td.get("departure_stop", {}).get("name", "?")
-            arr_stop = td.get("arrival_stop", {}).get("name", "?")
-
-            # Detect replacement bus services
-            vehicle = line_info.get("vehicle", {})
-            vehicle_type = vehicle.get("type", "")
-            is_replacement = (
-                vehicle_type == "BUS"
-                and any(kw in line_name.upper() for kw in ["SEV", "ERSATZ"])
-            )
-
-            parsed_legs.append(Leg(
-                departure_station=dep_stop,
-                departure_time=dep_time,
-                arrival_station=arr_stop,
-                arrival_time=arr_time,
-                line=line_name,
-                is_replacement_service=is_replacement,
-            ))
-
-    if not parsed_legs:
-        return None
-    return Connection(legs=parsed_legs)
+            parsed = _parse_transit_step(step)
+            if parsed is not None:
+                parsed_legs.append(parsed)
+    return Connection(legs=parsed_legs) if parsed_legs else None
 
 
 # ---------------------------------------------------------------------------

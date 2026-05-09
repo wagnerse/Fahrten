@@ -115,13 +115,13 @@ def render_result(plan: DayPlan) -> None:
 
     st.subheader("Tagesplan")
     for link in plan.chain:
-        if link.type == "anreise":
+        if link.type == "outbound":
             _render_connection_block("🚉 Anreise", link)
         elif link.type == "tour":
             _render_tour_block(link)
         elif link.type == "transfer":
             _render_connection_block("🔄 Transfer", link)
-        elif link.type == "rückreise":
+        elif link.type == "inbound":
             _render_connection_block("🏠 Rückreise", link)
 
     st.divider()

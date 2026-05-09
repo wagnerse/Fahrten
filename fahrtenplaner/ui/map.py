@@ -1,6 +1,6 @@
 """Route visualization on a Carto basemap.
 
-Tour segments render in DB Verkehrsrot; anreise/rückreise/transfer in muted slate
+Tour segments render in DB Verkehrsrot; outbound/inbound/transfer in muted slate
 to emphasize the *paid* portions of the day visually.
 """
 
@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import streamlit as st
 
-from db_client import lookup_station
+from transit_client import lookup_station
 from models import DayPlan
 
 
 _MAP_COLORS = {
-    "anreise":   [108, 122, 140, 210],   # muted slate (commuting)
+    "outbound":   [108, 122, 140, 210],   # muted slate (commuting)
     "tour":      [236,   0,  22, 235],   # Verkehrsrot — the paid work
     "transfer":  [170, 170, 165, 190],   # light gray (idle connection)
-    "rückreise": [108, 122, 140, 210],   # muted slate (return)
+    "inbound": [108, 122, 140, 210],   # muted slate (return)
 }
 
 _MAP_TOOLTIP_STYLE = {
@@ -146,7 +146,7 @@ def _render_map_legend() -> None:
 
 
 def render_route_map(plan: DayPlan) -> None:
-    """Render the daily route on a map. Tour segments in DB red, anreise/rückreise muted."""
+    """Render the daily route on a map. Tour segments in DB red, outbound/inbound muted."""
     if not plan.chain:
         return
 

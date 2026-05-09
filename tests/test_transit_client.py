@@ -1,4 +1,4 @@
-"""Tests for db_client Google Maps integration — mocked, no real API calls."""
+"""Tests for transit_client Google Maps integration — mocked, no real API calls."""
 
 import sys
 from datetime import datetime, timedelta
@@ -89,11 +89,11 @@ def clear_caches():
     """Clear all st.cache_data caches between tests."""
     yield
     # Import after path setup
-    import db_client
-    if hasattr(db_client, '_station_cache'):
-        db_client._station_cache.clear()
-    if hasattr(db_client, '_connection_cache'):
-        db_client._connection_cache.clear()
+    import transit_client
+    if hasattr(transit_client, '_station_cache'):
+        transit_client._station_cache.clear()
+    if hasattr(transit_client, '_connection_cache'):
+        transit_client._connection_cache.clear()
 
 
 class TestLookupStation:
@@ -101,8 +101,8 @@ class TestLookupStation:
         mock_client = MagicMock()
         mock_client.geocode.return_value = GMAPS_GEOCODE_PRENZLAU
 
-        with patch("db_client._gmaps", mock_client):
-            from db_client import lookup_station
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import lookup_station
             result = lookup_station("Prenzlau")
 
         assert result is not None
@@ -113,8 +113,8 @@ class TestLookupStation:
         mock_client = MagicMock()
         mock_client.geocode.return_value = []
 
-        with patch("db_client._gmaps", mock_client):
-            from db_client import lookup_station
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import lookup_station
             result = lookup_station("Nirgendwo Hbf")
 
         assert result is None
@@ -125,8 +125,8 @@ class TestFindConnection:
         mock_client = MagicMock()
         mock_client.directions.return_value = GMAPS_DIRECTIONS_PRENZLAU_WARNEMUENDE["routes"]
 
-        with patch("db_client._gmaps", mock_client):
-            from db_client import find_connection
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import find_connection
             conn = find_connection(
                 "ChIJ_prenzlau", "ChIJ_warnemuende",
                 "2026-04-01T04:00:00",
@@ -144,8 +144,8 @@ class TestFindConnection:
         mock_client = MagicMock()
         mock_client.directions.return_value = []
 
-        with patch("db_client._gmaps", mock_client):
-            from db_client import find_connection
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import find_connection
             conn = find_connection("id_a", "id_b", "2026-04-01T04:00:00")
 
         assert conn is None
@@ -156,8 +156,8 @@ class TestCheckReachability:
         mock_client = MagicMock()
         mock_client.directions.return_value = GMAPS_DIRECTIONS_PRENZLAU_WARNEMUENDE["routes"]
 
-        with patch("db_client._gmaps", mock_client):
-            from db_client import check_reachability_with_ids
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import check_reachability_with_ids
             conn = check_reachability_with_ids(
                 "id_prenzlau", "id_warnemuende",
                 earliest_departure=datetime(2026, 4, 1, 4, 0),
@@ -173,8 +173,8 @@ class TestCheckReachability:
         mock_client = MagicMock()
         mock_client.directions.return_value = GMAPS_DIRECTIONS_PRENZLAU_WARNEMUENDE["routes"]
 
-        with patch("db_client._gmaps", mock_client):
-            from db_client import check_reachability_with_ids
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import check_reachability_with_ids
             # Arrival is 2025-04-01 12:48 local; deadline before that
             conn = check_reachability_with_ids(
                 "id_prenzlau", "id_warnemuende",
@@ -188,8 +188,8 @@ class TestCheckReachability:
         mock_client = MagicMock()
         mock_client.directions.return_value = []
 
-        with patch("db_client._gmaps", mock_client):
-            from db_client import check_reachability_with_ids
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import check_reachability_with_ids
             conn = check_reachability_with_ids(
                 "id_a", "id_b",
                 earliest_departure=datetime(2026, 4, 1, 4, 0),
@@ -201,19 +201,19 @@ class TestCheckReachability:
 
 class TestStationsMatch:
     def test_exact_match(self):
-        from db_client import stations_match
+        from transit_client import stations_match
         assert stations_match("Prenzlau", "Prenzlau")
 
     def test_hbf_suffix(self):
-        from db_client import stations_match
+        from transit_client import stations_match
         assert stations_match("Rostock Hbf", "Rostock")
 
     def test_contained(self):
-        from db_client import stations_match
+        from transit_client import stations_match
         assert stations_match("Warnemünde", "Rostock-Warnemünde")
 
     def test_different_stations(self):
-        from db_client import stations_match
+        from transit_client import stations_match
         assert not stations_match("Berlin", "München")
 
 
@@ -235,8 +235,8 @@ class TestCrossBorderStations:
             "geometry": {"location": {"lat": 53.4285, "lng": 14.5528}},
         }]
 
-        with patch("db_client._gmaps", mock_client):
-            from db_client import lookup_station
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import lookup_station
             result = lookup_station("Szczecin Glowny")
 
         assert result is not None
@@ -257,8 +257,8 @@ class TestCrossBorderStations:
             "geometry": {"location": {"lat": 53.9108, "lng": 14.2471}},
         }]
 
-        with patch("db_client._gmaps", mock_client):
-            from db_client import lookup_station
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import lookup_station
             result = lookup_station("Swinoujscie Centrum")
 
         assert result is not None
@@ -272,8 +272,8 @@ class TestCrossBorderStations:
         mock_client = MagicMock()
         mock_client.geocode.return_value = GMAPS_GEOCODE_PRENZLAU
 
-        with patch("db_client._gmaps", mock_client):
-            from db_client import lookup_station
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import lookup_station
             result = lookup_station("Prenzlau")
 
         assert result is not None

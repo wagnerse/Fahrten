@@ -104,7 +104,7 @@ class Connection:
 @dataclass
 class ChainLink:
     """Ein Element im Tagesplan: entweder Tour oder Transfer."""
-    type: str  # "tour", "transfer", "anreise", "rückreise"
+    type: str  # "tour", "transfer", "outbound", "inbound"
     tour: Optional[Tour] = None
     connection: Optional[Connection] = None
     warning: Optional[str] = None
@@ -113,9 +113,9 @@ class ChainLink:
     def label(self) -> str:
         if self.type == "tour" and self.tour:
             return f"Tour {self.tour.tour_nr}"
-        if self.type == "anreise":
+        if self.type == "outbound":
             return "Anreise"
-        if self.type == "rückreise":
+        if self.type == "inbound":
             return "Rückreise"
         return "Transfer"
 
