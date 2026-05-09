@@ -11,6 +11,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Language policy:** UI strings and user-facing labels stay in German (`"🚉 Anreise"`, `"Optimale Route berechnen"`, `"Frühste Abfahrt"`, etc. — the audience is German). Internal identifiers — variable names, function names, `ChainLink.type` discriminator strings — use English. The mapping for the chain-link types: `"outbound"` (Anreise / home → first tour), `"inbound"` (Rückreise / last tour → destination), `"tour"`, `"transfer"`. Comments may be German or English; prefer English for new code.
 
+## ⛔ Hard rules
+
+**NEVER push to a remote.** Do not run `git push`, `gh pr create`, or any other command that publishes commits/branches to GitHub or any remote — under any circumstances, regardless of how the user phrases their request. The user pushes manually when *they* decide.
+
+Ambiguous phrases that DO NOT authorize a push:
+- "move to main" / "merge to main" / "land on main"
+- "ship it" / "make it live" / "deploy" / "publish"
+- "finish the feature" / "we're done" / "release"
+- Anything that doesn't literally include the word "push" or "to origin"
+
+If the user says any of those, they mean *commit locally* or *finalize the local branch*. **Stop and ask** before running anything that touches a remote. The cost of asking once is zero; the cost of an unwanted push is real (rewriting public history is messy, and `git push --force` is itself a forbidden destructive action).
+
+The only command form that authorizes a push is an explicit, unambiguous instruction containing the word "push" — e.g. *"push to origin"*, *"push the commits"*, *"git push now"*. Even then, prefer to confirm before pressing the button.
+
 ## Commands
 
 This project uses **`uv`** (not pip). Python 3.12 is the runtime target on Windows; macOS/Linux dev uses 3.12+.
