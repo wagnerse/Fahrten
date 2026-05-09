@@ -710,3 +710,46 @@ class TestScaleBeyond20Tours:
         # 22 × 5€ + 50€ + 60€ + 70€ = 290€
         assert plan.num_tours == 25
         assert plan.total_euros == pytest.approx(290.0)
+
+
+class TestCarMode:
+    """Car-mode optimizer finds chains unreachable by transit alone."""
+
+    def test_finds_chain_starting_and_ending_at_same_station(self):
+        """A 5:00 tour at Pasewalk is reachable when home (Prenzlau) is 30 min by car."""
+        from optimizer import optimize_day_car_mode
+        from transit_client import lookup_station, driving_info
+
+        # Two tours, both starting AND ending at Pasewalk on the same day.
+        tour_a = make_tour(704347, "05:30", "Pasewalk", "08:00", "Pasewalk", 50.0)
+        tour_b = make_tour(704348, "10:00", "Pasewalk", "14:00", "Pasewalk", 60.0)
+
+        # Mocks: home & Pasewalk geocode; driving Prenzlau→Pasewalk = 30 min, 32 km;
+        # transfer A→B is feasible at same station.
+        with patch("optimizer.batch_lookup_stations", return_value={
+            "Prenzlau": {"id": "ChIJ_prenzlau", "name": "Prenzlau"},
+            "Pasewalk": {"id": "ChIJ_pasewalk", "name": "Pasewalk"},
+        }), patch("optimizer.check_reachability_with_ids", return_value=Connection(legs=[])), \
+             patch("optimizer.driving_info", return_value=(30, 32.0)):
+
+            plan = optimize_day_car_mode(
+                tours=[tour_a, tour_b],
+                home_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(4, 0)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=60,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+            )
+
+        # Both tours should be in the chain (same station, no time conflict).
+        assert plan.num_tours == 2
+        # Chain starts and ends at Pasewalk via car legs.
+        assert plan.chain[0].type == "car_outbound"
+        assert plan.chain[-1].type == "car_inbound"
+        assert plan.chain[0].car_leg.to_station == "Pasewalk"
+        assert plan.chain[-1].car_leg.to_station == "Prenzlau"
+        # Cost = 2 × 32 km × (7/100 × 1.79) = 8.0192 €
+        assert plan.total_costs == pytest.approx(8.0192, abs=0.001)
+        # Net euros = 110 − 8.0192 ≈ 101.98
+        assert plan.net_euros == pytest.approx(101.98, abs=0.1)

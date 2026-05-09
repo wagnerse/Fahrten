@@ -9,10 +9,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
-from models import ChainLink, Connection, DayPlan, Tour
+from models import CarLeg, ChainLink, Connection, DayPlan, OptimizationResult, Tour
 from transit_client import (
     batch_lookup_stations,
     check_reachability_with_ids,
+    driving_info,
     stations_match,
 )
 
@@ -459,6 +460,148 @@ def optimize_day(
         f"Fertig! {plan.num_tours} Touren, {plan.total_euros:.2f}€ "
         f"({api_calls} API-Calls)",
     )
+    return plan
+
+
+def optimize_day_car_mode(
+    tours: list[Tour],
+    home_station: str,
+    earliest_departure: datetime,
+    latest_return: datetime,
+    max_car_minutes: int,
+    fuel_consumption: float,
+    fuel_price: float,
+    progress_callback: ProgressCb = None,
+    max_transfer_gap_hours: float = MAX_TRANSFER_GAP_HOURS,
+) -> DayPlan:
+    """Find the best chain that starts AND ends at a tour-departure station
+    within `max_car_minutes` driving radius from `home_station`. The user drives
+    to that station, does the tour chain, then drives back from there.
+    """
+    if not tours or max_car_minutes <= 0:
+        return DayPlan()
+
+    report = _normalize_progress(progress_callback)
+
+    # Resolve all stations once (shared with potential transit pass via cache).
+    station_names = _collect_station_names(tours, home_station, home_station)
+    station_ids = batch_lookup_stations(list(station_names))
+    get_id = _id_lookup(station_ids)
+    home_id = get_id(home_station)
+    if not home_id:
+        return DayPlan()
+
+    # Build the transit transfer matrix once (shared with sister transit-mode call).
+    edge, _ = _compute_transfer_matrix(
+        sorted(tours, key=lambda t: t.departure_dt),
+        get_id, max_transfer_gap_hours, report,
+    )
+
+    sorted_tours = sorted(tours, key=lambda t: t.departure_dt)
+    candidates = sorted({t.departure_station for t in sorted_tours})
+
+    cost_per_km = (fuel_consumption / 100.0) * fuel_price
+    best_plan = DayPlan()
+
+    for candidate in candidates:
+        cand_id = get_id(candidate)
+        if not cand_id:
+            continue
+        info = driving_info(home_id, cand_id)
+        if info is None:
+            continue
+        drive_min, drive_km = info
+        if drive_min > max_car_minutes:
+            continue
+
+        plan = _build_car_chain_for_candidate(
+            sorted_tours, edge, candidate, drive_min, drive_km, cost_per_km,
+            earliest_departure, latest_return, home_station,
+        )
+        if plan.net_euros > best_plan.net_euros:
+            best_plan = plan
+
+    return best_plan
+
+
+def _build_car_chain_for_candidate(
+    tours: list[Tour],
+    edge: list[list[Optional[Connection]]],
+    candidate: str,
+    drive_min: int,
+    drive_km: float,
+    cost_per_km: float,
+    earliest_departure: datetime,
+    latest_return: datetime,
+    home_station: str,
+) -> DayPlan:
+    """Run the constrained DAG-DP for one candidate car-park station and
+    materialize the resulting chain into a DayPlan with car legs.
+    """
+    n = len(tours)
+    car_arrival = earliest_departure + timedelta(minutes=drive_min)
+    latest_tour_arrival = latest_return - timedelta(minutes=drive_min)
+
+    dp: list[float] = [NEG_INF] * n
+    pred: list[int] = [-1] * n
+
+    # Seed: tours that start at the candidate station after car arrival.
+    for i, tour in enumerate(tours):
+        if tour.departure_station == candidate and tour.departure_dt >= car_arrival:
+            dp[i] = tour.euros
+
+    # Standard DAG-DP transition (uses shared transfer matrix).
+    for j in range(n):
+        for i in range(j):
+            if edge[i][j] is None or dp[i] == NEG_INF:
+                continue
+            new_val = dp[i] + tours[j].euros
+            if new_val > dp[j]:
+                dp[j] = new_val
+                pred[j] = i
+
+    # Best end: tour ending at the candidate station, with time to drive back.
+    best_val = NEG_INF
+    best_j = -1
+    for j, val in enumerate(dp):
+        if val == NEG_INF:
+            continue
+        if tours[j].arrival_station != candidate:
+            continue
+        if tours[j].arrival_dt > latest_tour_arrival:
+            continue
+        if val > best_val:
+            best_val = val
+            best_j = j
+
+    if best_j == -1:
+        return DayPlan()
+
+    chain_indices = _reconstruct_chain(pred, best_j)
+    leg_cost = drive_km * cost_per_km
+
+    plan = DayPlan()
+    plan.chain.append(ChainLink(
+        type="car_outbound",
+        car_leg=CarLeg(
+            from_station=home_station, to_station=candidate,
+            minutes=drive_min, km=drive_km, cost=leg_cost,
+        ),
+    ))
+    for pos, idx in enumerate(chain_indices):
+        plan.chain.append(ChainLink(type="tour", tour=tours[idx]))
+        if pos < len(chain_indices) - 1:
+            next_idx = chain_indices[pos + 1]
+            plan.chain.append(_transfer_link(
+                tours[idx], tours[next_idx], edge[idx][next_idx],
+            ))
+    plan.chain.append(ChainLink(
+        type="car_inbound",
+        car_leg=CarLeg(
+            from_station=candidate, to_station=home_station,
+            minutes=drive_min, km=drive_km, cost=leg_cost,
+        ),
+    ))
     return plan
 
 
