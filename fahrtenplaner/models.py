@@ -197,6 +197,7 @@ class OptimizationResult:
     """A primary plan + an optional alternative for side-by-side comparison."""
     winner: DayPlan
     alternative: Optional["DayPlan"] = None
+    latest_return_target: Optional[datetime] = None  # user's preferred return time
 
     @property
     def has_alternative(self) -> bool:

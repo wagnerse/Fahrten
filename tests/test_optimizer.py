@@ -816,3 +816,38 @@ class TestCarMode:
 
         transit_mock.assert_called_once()
         car_mock.assert_not_called()  # never reaches the car-mode pass
+
+    def test_finds_chain_with_transit_return_to_car(self):
+        """Relaxed car-mode: chain ends at a different station, transit returns to car."""
+        from optimizer import optimize_day_car_mode
+
+        # One tour that DOES NOT loop back to its start station.
+        tour = make_tour(704350, "06:00", "Pasewalk", "10:00", "Stralsund Hbf", 80.0)
+
+        # Mocks: home + Pasewalk + Stralsund geocode; car drive 30 min Prenzlau→Pasewalk;
+        # transit Stralsund→Pasewalk takes ~1h, returns by 11:30 (well before 23:59 + grace).
+        return_conn = make_leg_conn("Stralsund Hbf", "2026-04-01T10:30:00",
+                                     "Pasewalk",      "2026-04-01T11:30:00")
+
+        with patch("optimizer.batch_lookup_stations", return_value={
+            "Prenzlau":     {"id": "ChIJ_prenzlau", "name": "Prenzlau"},
+            "Pasewalk":     {"id": "ChIJ_pasewalk", "name": "Pasewalk"},
+            "Stralsund Hbf":{"id": "ChIJ_stralsund","name": "Stralsund Hbf"},
+        }), patch("optimizer.driving_info", return_value=(30, 32.0)), \
+             patch("optimizer.check_reachability_with_ids", return_value=return_conn):
+            plan = optimize_day_car_mode(
+                tours=[tour],
+                home_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(4, 0)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=60,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+            )
+
+        # Chain shape: car_outbound → tour → inbound → car_inbound
+        assert plan.num_tours == 1
+        types = [link.type for link in plan.chain]
+        assert types == ["car_outbound", "tour", "inbound", "car_inbound"]
+        assert plan.chain[2].connection is not None  # the free transit return leg
+        assert plan.chain[2].connection.legs[0].arrival_station == "Pasewalk"

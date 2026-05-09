@@ -24,6 +24,9 @@ MIN_TRANSFER_MINUTES = 5
 TIGHT_TRANSFER_MINUTES = 15
 # Maximale sinnvolle Wartezeit zwischen Touren (Stunden)
 MAX_TRANSFER_GAP_HOURS = 12
+# Grace period beyond the user-set "Späteste Rückkehr" — they may exceed
+# their preferred time if it earns more revenue.
+LATEST_RETURN_GRACE_HOURS = 4
 
 NEG_INF = float("-inf")
 
@@ -404,6 +407,7 @@ def optimize_day(
     if not tours:
         return DayPlan()
 
+    latest_return_hard = latest_return + timedelta(hours=LATEST_RETURN_GRACE_HOURS)
     report = _normalize_progress(progress_callback)
 
     # ----- Station resolution ------------------------------------------------
@@ -437,7 +441,7 @@ def optimize_day(
 
     # ----- Phase 3: Rückreise ------------------------------------------------
     inbound, api3 = _compute_inbound(
-        tours, dest_station, dest_id, get_id, latest_return, report,
+        tours, dest_station, dest_id, get_id, latest_return_hard, report,
     )
     api_calls = api1 + api2 + api3
     report(0.77, f"Erreichbarkeitsgraph fertig – {api_calls} API-Calls")
@@ -481,6 +485,7 @@ def optimize_day_car_mode(
     if not tours or max_car_minutes <= 0:
         return DayPlan()
 
+    latest_return_hard = latest_return + timedelta(hours=LATEST_RETURN_GRACE_HOURS)
     report = _normalize_progress(progress_callback)
 
     # Resolve all stations once (shared with potential transit pass via cache).
@@ -522,7 +527,7 @@ def optimize_day_car_mode(
 
         plan = _build_car_chain_for_candidate(
             sorted_tours, edge, candidate, drive_min, drive_km, cost_per_km,
-            earliest_departure, latest_return, home_station,
+            earliest_departure, latest_return_hard, home_station, get_id,
         )
         if plan.net_euros > best_plan.net_euros:
             best_plan = plan
@@ -543,15 +548,18 @@ def _build_car_chain_for_candidate(
     drive_km: float,
     cost_per_km: float,
     earliest_departure: datetime,
-    latest_return: datetime,
+    latest_return_hard: datetime,
     home_station: str,
+    get_id: Callable[[str], Optional[str]],
 ) -> DayPlan:
     """Run the constrained DAG-DP for one candidate car-park station and
     materialize the resulting chain into a DayPlan with car legs.
+
+    Relaxation B: the chain may end at a station other than `candidate` if there
+    is a free transit connection back to `candidate` within the time budget.
     """
     n = len(tours)
     car_arrival = earliest_departure + timedelta(minutes=drive_min)
-    latest_tour_arrival = latest_return - timedelta(minutes=drive_min)
 
     dp: list[float] = [NEG_INF] * n
     pred: list[int] = [-1] * n
@@ -571,22 +579,36 @@ def _build_car_chain_for_candidate(
                 dp[j] = new_val
                 pred[j] = i
 
-    # Best end: tour ending at the candidate station, with time to drive back.
-    best_val = NEG_INF
-    best_j = -1
+    # Best end: tour ending at candidate (direct) or reachable by transit back to candidate.
+    return_conn_per_tour: dict[int, Optional[Connection]] = {}  # j → Connection (None = direct)
+    cand_id = get_id(candidate)
     for j, val in enumerate(dp):
         if val == NEG_INF:
             continue
-        if not stations_match(tours[j].arrival_station, candidate):
+        arr_station = tours[j].arrival_station
+        arr_dt = tours[j].arrival_dt
+        # Direct: tour already ends at the candidate station
+        if stations_match(arr_station, candidate):
+            if arr_dt + timedelta(minutes=drive_min) <= latest_return_hard:
+                return_conn_per_tour[j] = None  # marks "direct end, no transit-back needed"
             continue
-        if tours[j].arrival_dt > latest_tour_arrival:
+        # Indirect: need transit from arr_station back to S
+        arr_id = get_id(arr_station)
+        if not arr_id or not cand_id:
             continue
-        if val > best_val:
-            best_val = val
-            best_j = j
+        return_buffer = timedelta(minutes=MIN_TRANSFER_MINUTES)
+        must_arrive_by = latest_return_hard - timedelta(minutes=drive_min)
+        return_conn = check_reachability_with_ids(
+            arr_id, cand_id, arr_dt + return_buffer, must_arrive_by,
+        )
+        if return_conn is not None:
+            return_conn_per_tour[j] = return_conn
 
-    if best_j == -1:
+    if not return_conn_per_tour:
         return DayPlan()
+
+    best_j = max(return_conn_per_tour, key=lambda j: dp[j])
+    return_conn = return_conn_per_tour[best_j]
 
     chain_indices = _reconstruct_chain(pred, best_j)
     leg_cost = drive_km * cost_per_km
@@ -606,6 +628,8 @@ def _build_car_chain_for_candidate(
             plan.chain.append(_transfer_link(
                 tours[idx], tours[next_idx], edge[idx][next_idx],
             ))
+    if return_conn is not None and return_conn.legs:
+        plan.chain.append(ChainLink(type="inbound", connection=return_conn))
     plan.chain.append(ChainLink(
         type="car_inbound",
         car_leg=CarLeg(
@@ -651,13 +675,15 @@ def optimize_with_modes(
 
     candidates = [p for p in (transit_plan, car_plan) if p.num_tours > 0]
     if not candidates:
-        return OptimizationResult(winner=DayPlan(), alternative=None)
+        return OptimizationResult(winner=DayPlan(), alternative=None,
+                                  latest_return_target=latest_return)
 
     # Sort by net euros desc, tie-break: transit wins (no car legs).
     candidates.sort(key=lambda p: (-p.net_euros, p.has_car_legs))
     winner = candidates[0]
     alternative = candidates[1] if len(candidates) > 1 else None
-    return OptimizationResult(winner=winner, alternative=alternative)
+    return OptimizationResult(winner=winner, alternative=alternative,
+                              latest_return_target=latest_return)
 
 
 def _check_transfer_warning(

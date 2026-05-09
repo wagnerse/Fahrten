@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from typing import Optional
+
 import pandas as pd
 import streamlit as st
 
@@ -139,8 +142,10 @@ def render_result(result: OptimizationResult) -> None:
     """Render winner card + optional alternative expander."""
     fuel_consumption = float(st.session_state.get("fuel_consumption", 7.0))
     fuel_price = float(st.session_state.get("fuel_price", 1.79))
+    latest_return_target = result.latest_return_target
 
-    _render_plan_full(result.winner, fuel_consumption, fuel_price, map_key="winner")
+    _render_plan_full(result.winner, fuel_consumption, fuel_price, map_key="winner",
+                      latest_return_target=latest_return_target)
 
     if not result.has_alternative:
         return
@@ -152,14 +157,50 @@ def render_result(result: OptimizationResult) -> None:
         f"{alt.net_euros:.2f} € netto ({alt.num_tours} Touren)"
     ).replace(".", ",")
     with st.expander(label, expanded=False):
-        _render_plan_full(alt, fuel_consumption, fuel_price, map_key="alternative")
+        _render_plan_full(alt, fuel_consumption, fuel_price, map_key="alternative",
+                          latest_return_target=latest_return_target)
+
+
+def _chain_end_time(plan: DayPlan) -> Optional[datetime]:
+    """Latest arrival time across the chain (last connection's arrival or last tour's arrival_dt)."""
+    if not plan.chain:
+        return None
+    last = plan.chain[-1]
+    if last.connection and last.connection.arrival_time:
+        return last.connection.arrival_time
+    if last.tour:
+        return last.tour.arrival_dt
+    # car_inbound has no internal datetime; fall back to second-to-last
+    for link in reversed(plan.chain[:-1]):
+        if link.connection and link.connection.arrival_time:
+            return link.connection.arrival_time
+        if link.tour:
+            return link.tour.arrival_dt
+    return None
 
 
 def _render_plan_full(
-    plan: DayPlan, fuel_consumption: float, fuel_price: float, map_key: str = "winner",
+    plan: DayPlan,
+    fuel_consumption: float,
+    fuel_price: float,
+    map_key: str = "winner",
+    latest_return_target: Optional[datetime] = None,
 ) -> None:
     """Full plan rendering: metrics + warnings + map toggle + chain + summary."""
     _render_winner_metrics(plan, fuel_consumption, fuel_price)
+
+    # Overshoot caption: show when chain ends after the user's preferred return time
+    end_dt = _chain_end_time(plan)
+    if latest_return_target is not None and end_dt is not None:
+        if end_dt > latest_return_target + timedelta(minutes=1):
+            delta = end_dt - latest_return_target
+            delta_min = int(delta.total_seconds() / 60)
+            h, m = divmod(delta_min, 60)
+            delta_str = f"{h}h{m:02d}" if h > 0 else f"{m} Min."
+            st.caption(
+                f"⚠ Rückkehr {end_dt.strftime('%H:%M')} "
+                f"({delta_str} nach {latest_return_target.strftime('%H:%M')} Wunschzeit)"
+            )
 
     for warning in plan.warnings:
         st.warning(warning)
@@ -181,7 +222,8 @@ def _render_plan_full(
         if link.type == "outbound":
             _render_connection_block("🚉 Anreise", link)
         elif link.type == "inbound":
-            _render_connection_block("🏠 Rückreise", link)
+            title = "🚆 Rückfahrt zum Auto" if plan.has_car_legs else "🏠 Rückreise"
+            _render_connection_block(title, link)
         elif link.type == "transfer":
             _render_connection_block("🔄 Transfer", link)
         elif link.type == "tour":
