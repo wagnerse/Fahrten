@@ -76,6 +76,23 @@ def _render_stations() -> tuple[str, str, bool]:
     return home, dest, False
 
 
+def _render_fuel_section() -> None:
+    """Sidebar 'Auto' expander: fuel consumption and current fuel price."""
+    with st.sidebar.expander("Auto"):
+        st.session_state.fuel_consumption = st.number_input(
+            "Auto-Verbrauch (l/100 km)",
+            min_value=0.0, max_value=30.0, step=0.1,
+            value=float(st.session_state.fuel_consumption),
+            help="Verbrauch eures Autos. Steht meist im Bordcomputer oder Fahrzeugschein.",
+        )
+        st.session_state.fuel_price = st.number_input(
+            "Spritpreis (€/l)",
+            min_value=0.0, max_value=5.0, step=0.01,
+            value=float(st.session_state.fuel_price),
+            help="Aktueller Spritpreis an der Tankstelle.",
+        )
+
+
 def _handle_load_tours(
     username: str, password: str, states: list[str], selected_date: date,
 ) -> None:
@@ -232,6 +249,8 @@ def render_sidebar() -> SidebarContext:
     states = _render_filters()
     selected_date = st.sidebar.date_input("Datum", value=date.today())
     home_station, dest_station, same_station = _render_stations()
+
+    _render_fuel_section()
 
     if st.sidebar.button("Touren laden", type="primary", use_container_width=True):
         _handle_load_tours(username, password, states, selected_date)
