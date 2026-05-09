@@ -304,3 +304,23 @@ class TestDrivingInfo:
         minutes, km = result
         assert minutes == 30
         assert km == pytest.approx(32.0, abs=0.01)
+
+    def test_caches_result_so_second_call_skips_api(self):
+        """The second call with the same place_ids does not hit the API."""
+        mock_response = [{
+            "legs": [{
+                "duration": {"value": 1800},
+                "distance": {"value": 32000},
+            }]
+        }]
+        mock_client = MagicMock()
+        mock_client.directions.return_value = mock_response
+
+        with patch("transit_client._gmaps", mock_client):
+            from transit_client import driving_info
+            first = driving_info("ChIJ_cache_a", "ChIJ_cache_b")
+            second = driving_info("ChIJ_cache_a", "ChIJ_cache_b")
+
+        assert first == second
+        # Cache should mean only ONE actual API call despite two function calls.
+        assert mock_client.directions.call_count == 1
