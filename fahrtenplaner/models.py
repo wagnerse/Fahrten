@@ -65,6 +65,16 @@ class Leg:
 
 
 @dataclass
+class CarLeg:
+    """A single-segment car drive between two stations."""
+    from_station: str
+    to_station: str
+    minutes: int        # one-way driving time
+    km: float           # one-way distance
+    cost: float = 0.0   # fuel cost for THIS leg only (computed by optimizer)
+
+
+@dataclass
 class Connection:
     """Eine DB-Verbindung von A nach B."""
     legs: list[Leg] = field(default_factory=list)
@@ -103,21 +113,23 @@ class Connection:
 
 @dataclass
 class ChainLink:
-    """Ein Element im Tagesplan: entweder Tour oder Transfer."""
-    type: str  # "tour", "transfer", "outbound", "inbound"
+    """Ein Element im Tagesplan: entweder Tour, Transfer oder Auto-Drive."""
+    type: str  # "tour" | "transfer" | "outbound" | "inbound" | "car_outbound" | "car_inbound"
     tour: Optional[Tour] = None
     connection: Optional[Connection] = None
+    car_leg: Optional[CarLeg] = None
     warning: Optional[str] = None
 
     @property
     def label(self) -> str:
-        if self.type == "tour" and self.tour:
-            return f"Tour {self.tour.tour_nr}"
-        if self.type == "outbound":
-            return "Anreise"
-        if self.type == "inbound":
-            return "Rückreise"
-        return "Transfer"
+        labels = {
+            "tour":         f"Tour {self.tour.tour_nr}" if self.tour else "Tour",
+            "outbound":     "Anreise",
+            "inbound":      "Rückreise",
+            "car_outbound": "Auto-Anfahrt",
+            "car_inbound":  "Auto-Rückfahrt",
+        }
+        return labels.get(self.type, "Transfer")
 
 
 @dataclass
@@ -132,6 +144,22 @@ class DayPlan:
     @property
     def total_euros(self) -> float:
         return sum(t.euros for t in self.tours)
+
+    @property
+    def total_costs(self) -> float:
+        """Sum of fuel costs across all car legs in the chain."""
+        return sum(link.car_leg.cost for link in self.chain
+                   if link.car_leg is not None)
+
+    @property
+    def net_euros(self) -> float:
+        """Gross revenue minus fuel cost — the comparison key for winner selection."""
+        return self.total_euros - self.total_costs
+
+    @property
+    def has_car_legs(self) -> bool:
+        """True iff this plan uses car-mode (any car leg in the chain)."""
+        return any(link.car_leg is not None for link in self.chain)
 
     @property
     def num_tours(self) -> int:
@@ -160,3 +188,14 @@ class DayPlan:
         if start and end:
             return f"{start:%H:%M} – {end:%H:%M}"
         return "–"
+
+
+@dataclass
+class OptimizationResult:
+    """A primary plan + an optional alternative for side-by-side comparison."""
+    winner: DayPlan
+    alternative: Optional["DayPlan"] = None
+
+    @property
+    def has_alternative(self) -> bool:
+        return self.alternative is not None and self.alternative.num_tours > 0
