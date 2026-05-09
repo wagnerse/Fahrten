@@ -21,3 +21,8 @@ def init_session_state() -> None:
         st.session_state.last_plan = None
     if "last_plan_log" not in st.session_state:
         st.session_state.last_plan_log = []
+
+    if "fuel_consumption" not in st.session_state:
+        st.session_state.fuel_consumption = 7.0
+    if "fuel_price" not in st.session_state:
+        st.session_state.fuel_price = 1.79
