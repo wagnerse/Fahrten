@@ -83,6 +83,23 @@ This is the core. It is **not** the bitmask DP that older planning docs describe
 
 Same-station and time-impossible pairs are skipped before any API call — this is the whole reason the optimizer can finish in reasonable time. Don't add code paths that bypass this pruning.
 
+### Two optimization modes
+
+`optimize_day` is the transit-only optimizer (returns a single `DayPlan`).
+For car-mode (Auto-Anfahrt) support, the UI calls `optimize_with_modes(...)`,
+which:
+
+1. Calls `optimize_day` for the transit-only candidate.
+2. If `max_car_minutes > 0` AND `home_station == dest_station`, also calls
+   `optimize_day_car_mode` to find the best chain that *starts and ends* at
+   a single car-park station within driving radius of home.
+3. Returns an `OptimizationResult(winner, alternative)`. The winner is the
+   plan with higher `net_euros` (gross − fuel cost). Tie → transit wins.
+
+The UI shows the winner card prominently with the alternative as a
+collapsible expander. `st.session_state.last_plan` is now
+`Optional[OptimizationResult]` (was: `Optional[DayPlan]`).
+
 ### Caching and rate limits
 
 `transit_client.py` keeps **module-level dicts** `_station_cache` and `_connection_cache` (and a singleton `_gmaps`). They survive across Streamlit reruns *within the same process* but reset on worker restart. This is intentional — do NOT swap them for `@st.cache_data`, which had been used previously and caused subtle bugs around `st.secrets` access during cold start. There is currently no rate limiter; Google Maps quotas are the constraint.
