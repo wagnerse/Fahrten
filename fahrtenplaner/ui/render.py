@@ -162,7 +162,9 @@ def render_result(result: OptimizationResult) -> None:
 
 
 def _chain_end_time(plan: DayPlan) -> Optional[datetime]:
-    """Latest arrival time across the chain (last connection's arrival or last tour's arrival_dt)."""
+    """Latest arrival-at-home time. For car_inbound, adds drive_min to the prior link's
+    arrival so the user sees the *actual* time they get home, not just when their last
+    transit/tour leg ended."""
     if not plan.chain:
         return None
     last = plan.chain[-1]
@@ -170,12 +172,13 @@ def _chain_end_time(plan: DayPlan) -> Optional[datetime]:
         return last.connection.arrival_time
     if last.tour:
         return last.tour.arrival_dt
-    # car_inbound has no internal datetime; fall back to second-to-last
+    # car_inbound has no internal datetime — its arrival is prior_link.arrival + drive_min
+    drive_min = last.car_leg.minutes if last.car_leg else 0
     for link in reversed(plan.chain[:-1]):
         if link.connection and link.connection.arrival_time:
-            return link.connection.arrival_time
+            return link.connection.arrival_time + timedelta(minutes=drive_min)
         if link.tour:
-            return link.tour.arrival_dt
+            return link.tour.arrival_dt + timedelta(minutes=drive_min)
     return None
 
 
