@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
-from models import CarLeg, ChainLink, Connection, DayPlan, OptimizationResult, Tour
+from models import CarLeg, ChainLink, Connection, DayPlan, Tour
 from transit_client import (
     batch_lookup_stations,
     check_reachability_with_ids,
@@ -492,16 +492,17 @@ def optimize_day_car_mode(
         return DayPlan()
 
     # Build the transit transfer matrix once (shared with sister transit-mode call).
+    sorted_tours = sorted(tours, key=lambda t: t.departure_dt)
     edge, _ = _compute_transfer_matrix(
-        sorted(tours, key=lambda t: t.departure_dt),
-        get_id, max_transfer_gap_hours, report,
+        sorted_tours, get_id, max_transfer_gap_hours, report,
     )
 
-    sorted_tours = sorted(tours, key=lambda t: t.departure_dt)
     candidates = sorted({t.departure_station for t in sorted_tours})
 
     cost_per_km = (fuel_consumption / 100.0) * fuel_price
     best_plan = DayPlan()
+
+    report(0.0, f"Auto-Modus: prüfe {len(candidates)} Kandidaten...")
 
     for candidate in candidates:
         cand_id = get_id(candidate)
@@ -514,12 +515,22 @@ def optimize_day_car_mode(
         if drive_min > max_car_minutes:
             continue
 
+        report(
+            (candidates.index(candidate) + 1) / max(len(candidates), 1),
+            f"Auto-Modus: {candidate} ({drive_min} min, {drive_km:.0f} km)",
+        )
+
         plan = _build_car_chain_for_candidate(
             sorted_tours, edge, candidate, drive_min, drive_km, cost_per_km,
             earliest_departure, latest_return, home_station,
         )
         if plan.net_euros > best_plan.net_euros:
             best_plan = plan
+
+    if best_plan.num_tours > 0:
+        report(1.0, f"Auto-Modus fertig: {best_plan.total_euros:.2f} € brutto")
+    else:
+        report(1.0, "Auto-Modus: keine Kette gefunden")
 
     return best_plan
 
@@ -547,7 +558,7 @@ def _build_car_chain_for_candidate(
 
     # Seed: tours that start at the candidate station after car arrival.
     for i, tour in enumerate(tours):
-        if tour.departure_station == candidate and tour.departure_dt >= car_arrival:
+        if stations_match(tour.departure_station, candidate) and tour.departure_dt >= car_arrival:
             dp[i] = tour.euros
 
     # Standard DAG-DP transition (uses shared transfer matrix).
@@ -566,7 +577,7 @@ def _build_car_chain_for_candidate(
     for j, val in enumerate(dp):
         if val == NEG_INF:
             continue
-        if tours[j].arrival_station != candidate:
+        if not stations_match(tours[j].arrival_station, candidate):
             continue
         if tours[j].arrival_dt > latest_tour_arrival:
             continue

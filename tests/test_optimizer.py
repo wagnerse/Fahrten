@@ -718,7 +718,7 @@ class TestCarMode:
     def test_finds_chain_starting_and_ending_at_same_station(self):
         """A 5:00 tour at Pasewalk is reachable when home (Prenzlau) is 30 min by car."""
         from optimizer import optimize_day_car_mode
-        from transit_client import lookup_station, driving_info
+        from transit_client import driving_info
 
         # Two tours, both starting AND ending at Pasewalk on the same day.
         tour_a = make_tour(704347, "05:30", "Pasewalk", "08:00", "Pasewalk", 50.0)
