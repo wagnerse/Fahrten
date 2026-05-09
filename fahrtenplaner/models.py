@@ -148,8 +148,10 @@ class DayPlan:
     @property
     def total_costs(self) -> float:
         """Sum of fuel costs across all car legs in the chain."""
-        return sum(link.car_leg.cost for link in self.chain
-                   if link.car_leg is not None)
+        return sum(
+            (link.car_leg.cost for link in self.chain if link.car_leg is not None),
+            0.0,
+        )
 
     @property
     def net_euros(self) -> float:
