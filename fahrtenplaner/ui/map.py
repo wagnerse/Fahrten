@@ -13,10 +13,12 @@ from models import DayPlan
 
 
 _MAP_COLORS = {
-    "outbound":   [108, 122, 140, 210],   # muted slate (commuting)
-    "tour":      [236,   0,  22, 235],   # Verkehrsrot — the paid work
-    "transfer":  [170, 170, 165, 190],   # light gray (idle connection)
-    "inbound": [108, 122, 140, 210],   # muted slate (return)
+    "outbound":     [108, 122, 140, 210],   # muted slate (commuting)
+    "tour":         [236,   0,  22, 235],   # Verkehrsrot — the paid work
+    "transfer":     [170, 170, 165, 190],   # light gray (idle connection)
+    "inbound":      [108, 122, 140, 210],   # muted slate (return)
+    "car_outbound": [212, 160,  23, 230],   # amber
+    "car_inbound":  [212, 160,  23, 230],   # amber
 }
 
 _MAP_TOOLTIP_STYLE = {
@@ -51,6 +53,9 @@ def _collect_station_coords(plan: DayPlan) -> dict[str, tuple[float, float]]:
             for leg in link.connection.legs:
                 add(leg.departure_station)
                 add(leg.arrival_station)
+        if link.car_leg:
+            add(link.car_leg.from_station)
+            add(link.car_leg.to_station)
     return coords
 
 
@@ -70,6 +75,7 @@ def _build_route_segments(
             "to":   [b[0], b[1]],
             "color": _MAP_COLORS.get(ctype, [120, 120, 120, 200]),
             "label": label,
+            "dashed": ctype in ("car_outbound", "car_inbound"),
         })
 
     for link in plan.chain:
@@ -79,6 +85,15 @@ def _build_route_segments(
                 link.tour.arrival_station,
                 "tour",
                 f"Tour {link.tour.tour_nr} · {link.tour.euros:.2f} €",
+            )
+        elif link.type in ("car_outbound", "car_inbound"):
+            if link.car_leg is None:
+                continue
+            push(
+                link.car_leg.from_station,
+                link.car_leg.to_station,
+                link.type,
+                f"{link.label} · {link.car_leg.minutes} min, {link.car_leg.km:.0f} km",
             )
         elif link.connection:
             for leg in link.connection.legs:
@@ -127,7 +142,13 @@ def _compute_route_view_state(coords: dict[str, tuple[float, float]], pdk):
 
 
 def _render_map_legend() -> None:
-    def bar(color: str) -> str:
+    def bar(color: str, dashed: bool = False) -> str:
+        if dashed:
+            return (
+                f'<svg width="22" height="4" style="vertical-align:middle;margin-right:6px;" '
+                f'aria-hidden="true"><line x1="0" y1="2" x2="22" y2="2" stroke="{color}" '
+                f'stroke-width="3" stroke-dasharray="4 3"/></svg>'
+            )
         return (
             f'<svg width="22" height="4" style="vertical-align:middle;margin-right:6px;" '
             f'aria-hidden="true"><rect width="22" height="4" rx="2" fill="{color}"/></svg>'
@@ -139,6 +160,7 @@ def _render_map_legend() -> None:
           <span class="leg">{bar('#EC0016')}Tour (bezahlt)</span>
           <span class="leg">{bar('#6C7A8C')}Anreise / Rückreise</span>
           <span class="leg">{bar('#AAAAA5')}Transfer</span>
+          <span class="leg">{bar('#D4A017', dashed=True)}Auto</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -165,11 +187,25 @@ def render_route_map(plan: DayPlan) -> None:
         st.caption("Karte nicht verfügbar (pydeck fehlt).")
         return
 
-    line_layer = pdk.Layer(
-        "LineLayer", data=segments,
-        get_source_position="from", get_target_position="to",
-        get_color="color", get_width=5, pickable=True,
-    )
+    solid_segments = [s for s in segments if not s.get("dashed")]
+    dashed_segments = [s for s in segments if s.get("dashed")]
+
+    layers = []
+    if solid_segments:
+        layers.append(pdk.Layer(
+            "LineLayer", data=solid_segments,
+            get_source_position="from", get_target_position="to",
+            get_color="color", get_width=5, pickable=True,
+        ))
+    if dashed_segments:
+        layers.append(pdk.Layer(
+            "LineLayer", data=dashed_segments,
+            get_source_position="from", get_target_position="to",
+            get_color="color", get_width=5,
+            get_dash_array=[6, 4],
+            extensions=[pdk.types.String("PathStyleExtension")] if hasattr(pdk.types, "String") else [],
+            pickable=True,
+        ))
     station_data = [{"name": n, "label": "", "position": [c[0], c[1]]} for n, c in coords.items()]
     station_layer = pdk.Layer(
         "ScatterplotLayer", data=station_data,
@@ -178,9 +214,10 @@ def render_route_map(plan: DayPlan) -> None:
         line_width_min_pixels=1, get_line_color=[255, 255, 255, 240],
         stroked=True, pickable=True,
     )
+    layers.append(station_layer)
 
     deck = pdk.Deck(
-        layers=[line_layer, station_layer],
+        layers=layers,
         initial_view_state=_compute_route_view_state(coords, pdk),
         map_provider="carto", map_style="light",
         tooltip={"html": "<b>{name}{label}</b>", "style": _MAP_TOOLTIP_STYLE},
