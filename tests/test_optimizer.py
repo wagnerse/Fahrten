@@ -753,3 +753,66 @@ class TestCarMode:
         assert plan.total_costs == pytest.approx(8.0192, abs=0.001)
         # Net euros = 110 − 8.0192 ≈ 101.98
         assert plan.net_euros == pytest.approx(101.98, abs=0.1)
+
+    def test_winner_is_decided_by_net_euros(self):
+        """Transit gross 200 vs Car gross 215 with 20 € fuel → transit wins (net 200 > 195)."""
+        from optimizer import optimize_with_modes
+        from models import DayPlan, ChainLink, Tour, CarLeg
+
+        # Build two pre-cooked plans to inject. Real optimizer integration
+        # is covered by other tests; here we test the *comparison logic*.
+        transit_plan = DayPlan()
+        # 200 € gross via a single tour
+        transit_plan.chain.append(ChainLink(type="tour", tour=make_tour(
+            1, "08:00", "Prenzlau", "10:00", "Prenzlau", 200.0,
+        )))
+
+        car_plan = DayPlan()
+        car_plan.chain.append(ChainLink(type="car_outbound", car_leg=CarLeg(
+            from_station="Prenzlau", to_station="Pasewalk",
+            minutes=30, km=50, cost=10.0,
+        )))
+        car_plan.chain.append(ChainLink(type="tour", tour=make_tour(
+            2, "08:00", "Pasewalk", "10:00", "Pasewalk", 215.0,
+        )))
+        car_plan.chain.append(ChainLink(type="car_inbound", car_leg=CarLeg(
+            from_station="Pasewalk", to_station="Prenzlau",
+            minutes=30, km=50, cost=10.0,
+        )))
+
+        # Net: transit = 200, car = 215 - 20 = 195
+        with patch("optimizer.optimize_day", return_value=transit_plan), \
+             patch("optimizer.optimize_day_car_mode", return_value=car_plan):
+            result = optimize_with_modes(
+                tours=[transit_plan.chain[0].tour, car_plan.chain[1].tour],
+                home_station="Prenzlau", dest_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(4, 0)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=30,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+            )
+
+        assert result.winner.net_euros == pytest.approx(200.0, abs=0.1)
+        assert result.alternative is not None
+        assert result.alternative.net_euros == pytest.approx(195.0, abs=0.1)
+
+    def test_car_mode_skipped_when_dest_differs(self):
+        """When dest_station != home_station, the car-mode pass is skipped."""
+        from optimizer import optimize_with_modes
+        from models import DayPlan
+
+        with patch("optimizer.optimize_day", return_value=DayPlan()) as transit_mock, \
+             patch("optimizer.optimize_day_car_mode") as car_mock:
+            optimize_with_modes(
+                tours=[],
+                home_station="Prenzlau", dest_station="Stralsund",  # ≠ home
+                earliest_departure=datetime.combine(DAY, time(4, 0)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=30,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+            )
+
+        transit_mock.assert_called_once()
+        car_mock.assert_not_called()  # never reaches the car-mode pass

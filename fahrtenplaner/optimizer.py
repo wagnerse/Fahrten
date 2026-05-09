@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
-from models import CarLeg, ChainLink, Connection, DayPlan, Tour
+from models import CarLeg, ChainLink, Connection, DayPlan, OptimizationResult, Tour
 from transit_client import (
     batch_lookup_stations,
     check_reachability_with_ids,
@@ -614,6 +614,50 @@ def _build_car_chain_for_candidate(
         ),
     ))
     return plan
+
+
+def optimize_with_modes(
+    tours: list[Tour],
+    home_station: str,
+    dest_station: str,
+    earliest_departure: datetime,
+    latest_return: datetime,
+    max_car_minutes: int,
+    fuel_consumption: float,
+    fuel_price: float,
+    progress_callback: ProgressCb = None,
+    max_transfer_gap_hours: float = MAX_TRANSFER_GAP_HOURS,
+) -> OptimizationResult:
+    """Run transit-mode and (optionally) car-mode optimization, return both as
+    winner + alternative. Net euros (gross − fuel cost) decides the winner.
+    Tie → transit wins (no car needed).
+    """
+    transit_plan = optimize_day(
+        tours, home_station, dest_station,
+        earliest_departure, latest_return,
+        progress_callback=progress_callback,
+        max_transfer_gap_hours=max_transfer_gap_hours,
+    )
+
+    car_plan: DayPlan = DayPlan()
+    if max_car_minutes > 0 and stations_match(home_station, dest_station):
+        car_plan = optimize_day_car_mode(
+            tours, home_station,
+            earliest_departure, latest_return,
+            max_car_minutes, fuel_consumption, fuel_price,
+            progress_callback=progress_callback,
+            max_transfer_gap_hours=max_transfer_gap_hours,
+        )
+
+    candidates = [p for p in (transit_plan, car_plan) if p.num_tours > 0]
+    if not candidates:
+        return OptimizationResult(winner=DayPlan(), alternative=None)
+
+    # Sort by net euros desc, tie-break: transit wins (no car legs).
+    candidates.sort(key=lambda p: (-p.net_euros, p.has_car_legs))
+    winner = candidates[0]
+    alternative = candidates[1] if len(candidates) > 1 else None
+    return OptimizationResult(winner=winner, alternative=alternative)
 
 
 def _check_transfer_warning(
