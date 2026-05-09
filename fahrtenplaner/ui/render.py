@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from models import ChainLink, DayPlan
+from models import ChainLink, DayPlan, OptimizationResult
 from .map import render_route_map
 
 
@@ -67,6 +67,27 @@ def _render_connection_block(title: str, link: ChainLink) -> None:
         st.markdown(f"{warning_html}{legs_html}", unsafe_allow_html=True)
 
 
+def _render_car_leg_block(link: ChainLink) -> None:
+    """Single-line block for car-mode anreise/rückreise drives."""
+    leg = link.car_leg
+    if not leg:
+        return
+    icon = "🚗"
+    label = link.label  # "Auto-Anfahrt" or "Auto-Rückfahrt"
+    cost_str = f"{leg.cost:.2f} €".replace(".", ",")
+    st.markdown(
+        f"""
+        <div class="auto-leg">
+          <span class="icon">{icon}</span>
+          <span class="label">{label}</span>
+          <span class="meta">{leg.minutes} min · {leg.km:.0f} km · {cost_str} Sprit</span>
+          <span class="dest">→ {leg.to_station}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_summary_table(plan: DayPlan) -> None:
     rows = []
     for link in plan.chain:
@@ -89,14 +110,56 @@ def _render_summary_table(plan: DayPlan) -> None:
         )
 
 
-def render_result(plan: DayPlan) -> None:
-    """Render a successful optimization result: metrics, optional map, chain, summary."""
-    st.success("Optimale Route gefunden!")
+def _render_winner_metrics(plan: DayPlan, fuel_consumption: float, fuel_price: float) -> None:
+    """Three-line metric stack with optional cost breakdown for car-mode plans."""
+    if plan.has_car_legs:
+        st.success(f"Optimaler Auto-Plan · {plan.net_euros:.2f} € netto".replace(".", ","))
+    else:
+        st.success(f"Optimaler Transit-Plan · {plan.total_euros:.2f} €".replace(".", ","))
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("Gesamtverdienst", f"{plan.total_euros:.2f} €")
+    m1.metric(
+        "Gesamtverdienst",
+        f"{plan.net_euros:.2f} € netto".replace(".", ","),
+        delta=f"−{plan.total_costs:.2f} € Sprit".replace(".", ",") if plan.has_car_legs else None,
+    )
     m2.metric("Anzahl Touren", plan.num_tours)
     m3.metric("Zeitraum", plan.time_range)
+
+    if plan.has_car_legs:
+        total_km = sum(link.car_leg.km for link in plan.chain if link.car_leg is not None)
+        st.caption(
+            f"Verdienst {plan.total_euros:.2f} € − Sprit {plan.total_costs:.2f} € "
+            f"({total_km:.0f} km · {fuel_consumption:.1f} l/100km · {fuel_price:.2f} €/l) "
+            f"= {plan.net_euros:.2f} € netto".replace(".", ",")
+        )
+
+
+def render_result(result: OptimizationResult) -> None:
+    """Render winner card + optional alternative expander."""
+    fuel_consumption = float(st.session_state.get("fuel_consumption", 7.0))
+    fuel_price = float(st.session_state.get("fuel_price", 1.79))
+
+    _render_plan_full(result.winner, fuel_consumption, fuel_price, map_key="winner")
+
+    if not result.has_alternative:
+        return
+
+    alt = result.alternative
+    label = (
+        f"▸ Alternative anzeigen · "
+        f"{'Auto' if alt.has_car_legs else 'Transit'} "
+        f"{alt.net_euros:.2f} € netto ({alt.num_tours} Touren)"
+    ).replace(".", ",")
+    with st.expander(label, expanded=False):
+        _render_plan_full(alt, fuel_consumption, fuel_price, map_key="alternative")
+
+
+def _render_plan_full(
+    plan: DayPlan, fuel_consumption: float, fuel_price: float, map_key: str = "winner",
+) -> None:
+    """Full plan rendering: metrics + warnings + map toggle + chain + summary."""
+    _render_winner_metrics(plan, fuel_consumption, fuel_price)
 
     for warning in plan.warnings:
         st.warning(warning)
@@ -106,7 +169,7 @@ def render_result(plan: DayPlan) -> None:
     if st.toggle(
         "Tagesroute auf Karte anzeigen",
         value=False,
-        key="show_route_map",
+        key=f"show_route_map_{map_key}",   # stable across reruns; unique per plan slot
         help="Zeigt Anreise (grau), Touren (rot) und Rückreise (grau) auf einer Karte.",
     ):
         render_route_map(plan)
@@ -117,12 +180,14 @@ def render_result(plan: DayPlan) -> None:
     for link in plan.chain:
         if link.type == "outbound":
             _render_connection_block("🚉 Anreise", link)
-        elif link.type == "tour":
-            _render_tour_block(link)
-        elif link.type == "transfer":
-            _render_connection_block("🔄 Transfer", link)
         elif link.type == "inbound":
             _render_connection_block("🏠 Rückreise", link)
+        elif link.type == "transfer":
+            _render_connection_block("🔄 Transfer", link)
+        elif link.type == "tour":
+            _render_tour_block(link)
+        elif link.type in ("car_outbound", "car_inbound"):
+            _render_car_leg_block(link)
 
     st.divider()
     st.subheader("Zusammenfassung")
