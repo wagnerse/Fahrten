@@ -11,8 +11,8 @@ from datetime import date, datetime, time, timedelta
 import pandas as pd
 import streamlit as st
 
-from models import DayPlan, Tour
-from optimizer import optimize_day
+from models import DayPlan, OptimizationResult, Tour
+from optimizer import optimize_with_modes
 from .errors import report_error
 from .render import render_result
 from .sidebar import SidebarContext
@@ -79,8 +79,8 @@ def _render_section_heading() -> None:
     )
 
 
-def _render_param_inputs() -> tuple[time, time, int]:
-    col1, col2, col3 = st.columns(3)
+def _render_param_inputs(same_station: bool) -> tuple[time, time, int, int]:
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         dep_str = st.text_input(
             "Früheste Abfahrt", value="04:00", placeholder="HH:MM",
@@ -100,15 +100,28 @@ def _render_param_inputs() -> tuple[time, time, int]:
     with col3:
         max_gap_minutes = st.number_input(
             "Max. Pause zwischen Touren (Min.)",
-            min_value=10, max_value=1440, value=60, step=10,
+            min_value=10, max_value=240, value=60, step=10,
             help="Maximale Zeit zwischen Ende einer Tour und Beginn der nächsten (inkl. Leerfahrt)",
         )
-    return dep_time, ret_time, int(max_gap_minutes)
+    with col4:
+        max_car_minutes = st.number_input(
+            "Max. Auto-Anfahrt (Min.)",
+            min_value=0, max_value=120, step=5,
+            value=0,
+            disabled=not same_station,
+            help=(
+                "Wie weit dürft ihr morgens mit dem Auto fahren, um den Startbahnhof "
+                "zu erreichen? 0 = kein Auto."
+                if same_station else
+                "Auto-Modus erfordert Ankunft = Abfahrt."
+            ),
+        )
+    return dep_time, ret_time, int(max_gap_minutes), int(max_car_minutes)
 
 
 def _run_optimization(
     day_tours: list[Tour], ctx: SidebarContext,
-    dep_time: time, ret_time: time, max_gap_minutes: int,
+    dep_time: time, ret_time: time, max_gap_minutes: int, max_car_minutes: int,
 ) -> None:
     earliest = datetime.combine(ctx.selected_date, dep_time)
     latest = datetime.combine(ctx.selected_date, ret_time)
@@ -124,21 +137,24 @@ def _run_optimization(
 
     opt_exc: Exception | None = None
     try:
-        plan = optimize_day(
+        result = optimize_with_modes(
             tours=day_tours,
             home_station=ctx.home_station,
             dest_station=ctx.dest_station,
             earliest_departure=earliest,
             latest_return=latest,
+            max_car_minutes=max_car_minutes,
+            fuel_consumption=st.session_state.fuel_consumption,
+            fuel_price=st.session_state.fuel_price,
             progress_callback=progress_cb,
             max_transfer_gap_hours=max_gap_minutes / 60,
         )
     except Exception as e:
-        plan = DayPlan()
+        result = OptimizationResult(winner=DayPlan(), alternative=None)
         opt_exc = e
 
     progress_bar.empty()
-    st.session_state.last_plan = plan
+    st.session_state.last_plan = result
     st.session_state.last_plan_log = log_messages
 
     if opt_exc is not None:
@@ -150,7 +166,7 @@ def _run_optimization(
                 f"{ctx.home_station if ctx.same_station else ctx.dest_station}\n"
                 f"Touren am Tag: {len(day_tours)}\n"
                 f"Fenster: {dep_time:%H:%M}–{ret_time:%H:%M}, "
-                f"max. Pause: {max_gap_minutes} Min\n"
+                f"max. Pause: {max_gap_minutes} Min, max. Auto: {max_car_minutes} Min\n"
                 f"Letzter Schritt: {(log_messages[-1] if log_messages else '—')}"
             ),
             exc=opt_exc,
@@ -263,7 +279,7 @@ def render_optimization_section(tours: list[Tour], ctx: SidebarContext) -> None:
         len(day_tours),
     )
     _render_section_heading()
-    dep_time, ret_time, max_gap_minutes = _render_param_inputs()
+    dep_time, ret_time, max_gap_minutes, max_car_minutes = _render_param_inputs(ctx.same_station)
 
     if st.button(
         "Optimale Route berechnen",
@@ -271,16 +287,16 @@ def render_optimization_section(tours: list[Tour], ctx: SidebarContext) -> None:
         use_container_width=True,
         disabled=not day_tours or not ctx.home_station,
     ):
-        _run_optimization(day_tours, ctx, dep_time, ret_time, max_gap_minutes)
+        _run_optimization(day_tours, ctx, dep_time, ret_time, max_gap_minutes, max_car_minutes)
 
-    plan = st.session_state.last_plan
-    if plan is None:
+    result = st.session_state.last_plan  # now Optional[OptimizationResult]
+    if result is None:
         _render_empty_state(day_tours, ctx)
-    elif plan.num_tours == 0:
+    elif result.winner.num_tours == 0:
         _render_no_chain_warning()
         _render_optimization_log()
     else:
-        render_result(plan)
+        render_result(result)
         _render_optimization_log()
 
     _render_tour_browser(tours)
