@@ -13,17 +13,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## ⛔ Hard rules
 
-**NEVER push to a remote.** Do not run `git push`, `gh pr create`, or any other command that publishes commits/branches to GitHub or any remote — under any circumstances, regardless of how the user phrases their request. The user pushes manually when *they* decide.
+**NEVER commit and NEVER push without explicit instruction.** Both are off by default. The user wants to review every change in the working tree before *any* git operation that creates or publishes history.
 
-Ambiguous phrases that DO NOT authorize a push:
+This means after editing files, the workflow is:
+1. Make the edit.
+2. Run tests / smoke-test as needed.
+3. **STOP.** Leave changes as uncommitted working-tree modifications.
+4. Tell the user what changed; let them commit and push themselves.
+
+Phrases that DO NOT authorize a commit:
+- "implement the feature" / "fix the bug" / "apply the change"
+- "make the change" / "update the file" / "add the function"
+- "ship it" / "deploy" / "publish" / "release" / "finalize"
 - "move to main" / "merge to main" / "land on main"
-- "ship it" / "make it live" / "deploy" / "publish"
-- "finish the feature" / "we're done" / "release"
-- Anything that doesn't literally include the word "push" or "to origin"
+- "finish" / "we're done" / "next task"
+- Anything that doesn't literally include the word "commit" or "push"
 
-If the user says any of those, they mean *commit locally* or *finalize the local branch*. **Stop and ask** before running anything that touches a remote. The cost of asking once is zero; the cost of an unwanted push is real (rewriting public history is messy, and `git push --force` is itself a forbidden destructive action).
+The only commands that authorize git history changes are explicit, unambiguous instructions:
+- **"commit"** — authorizes `git add` + `git commit` locally only. Still no push.
+- **"push"** or **"push to origin"** — authorizes `git push`. Confirm first if mixed with other ambiguous wording.
 
-The only command form that authorizes a push is an explicit, unambiguous instruction containing the word "push" — e.g. *"push to origin"*, *"push the commits"*, *"git push now"*. Even then, prefer to confirm before pressing the button.
+When dispatching subagents to implement tasks, **explicitly tell them not to commit** — even if the plan or task template includes a commit step. Override that step with a "do not commit" instruction in the subagent prompt.
+
+The cost of asking once is zero; the cost of an unwanted commit/push is real (force-resetting branches is itself a destructive operation, and the user loses the chance to review the change before it lands).
 
 ## Commands
 

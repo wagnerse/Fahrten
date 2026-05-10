@@ -170,10 +170,21 @@ class MyRESClient:
         "ErhebLeit", "Bonuspunkte", "Dauer", "Verguetung",
     ]
 
-    def __init__(self):
+    def __init__(self, impersonate: str = "chrome"):
+        """`impersonate` selects the curl_cffi TLS-fingerprint profile (e.g.
+        'chrome', 'chrome120', 'chrome116'). Rotating this between retries
+        helps when the IVV-Berlin WAF has flagged a specific fingerprint for
+        our IP — a different JA3/JA4 often gets through where retries on the
+        same fingerprint don't."""
         from curl_cffi.requests import Session
 
-        self._session = Session(impersonate="chrome", verify=False)
+        try:
+            self._session = Session(impersonate=impersonate, verify=False)
+        except Exception:
+            # Older curl_cffi versions or unknown profile labels: fall back to
+            # the safe default rather than failing the whole load.
+            self._session = Session(impersonate="chrome", verify=False)
+        self._impersonate = impersonate
         self._logged_in = False
         self._last_error = ""
 

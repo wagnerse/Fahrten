@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import streamlit as st
 
 
@@ -26,3 +28,11 @@ def init_session_state() -> None:
         st.session_state.fuel_consumption = 7.0
     if "fuel_price" not in st.session_state:
         st.session_state.fuel_price = 1.79
+    if "max_car_minutes" not in st.session_state:
+        st.session_state.max_car_minutes = 0
+
+    # Datum picker default. Seeded here (rather than via `value=` on the widget)
+    # so the demo loader's deferred update doesn't trigger Streamlit's
+    # "default value but also session_state" warning.
+    if "datum_input" not in st.session_state:
+        st.session_state.datum_input = date.today()

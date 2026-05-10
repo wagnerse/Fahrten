@@ -825,3 +825,671 @@ code, pre, kbd {
     font-size: 0.85rem;
 }
 .auto-leg .dest { margin-left: auto; font-weight: 500; color: var(--ink); }
+
+/* =============================================================================
+   Sidebar kit panels — instrument-panel grouping for Datenquelle / Route / Auto
+   ========================================================================== */
+
+[data-testid="stSidebar"] .kit-eyebrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin: 1.4rem 0 0.45rem;
+    padding: 0 0.05rem;
+}
+[data-testid="stSidebar"] .kit-eyebrow:first-of-type {
+    margin-top: 0.35rem;
+}
+[data-testid="stSidebar"] .kit-eyebrow__label {
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--sub);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+}
+
+/* Streamlit's bordered container becomes our card surface */
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius: var(--radius) !important;
+    border-color: var(--border) !important;
+    background: var(--surface) !important;
+    box-shadow: var(--shadow-xs);
+    padding: 0.85rem 0.95rem !important;
+}
+
+/* Tighter widget rhythm inside kit cards */
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"]
+    [data-testid="stVerticalBlock"] {
+    gap: 0.55rem;
+}
+
+/* Status pills (used in eyebrows and elsewhere) */
+.kit-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-family: var(--sans);
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--sub);
+    padding: 0.18rem 0.55rem;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    letter-spacing: -0.005em;
+    line-height: 1;
+    white-space: nowrap;
+}
+.kit-status__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--sub);
+    flex: 0 0 auto;
+}
+.kit-status--ok {
+    background: var(--success-soft);
+    border-color: rgba(29, 122, 86, 0.22);
+    color: var(--success);
+}
+.kit-status--ok .kit-status__dot { background: var(--success); box-shadow: 0 0 0 2px rgba(29, 122, 86, 0.16); }
+.kit-status--idle .kit-status__dot { background: #BDBDB8; }
+.kit-status--neutral { color: var(--ink-soft); }
+.kit-status--off {
+    background: transparent;
+    color: var(--sub);
+}
+
+/* Empty-state hint inside the Auto card when slider == 0 */
+.kit-empty {
+    font-family: var(--sans);
+    font-size: 0.83rem;
+    color: var(--sub);
+    line-height: 1.5;
+    padding: 0.55rem 0.7rem;
+    background: var(--surface-2);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+}
+.kit-empty strong { color: var(--ink-soft); font-weight: 600; }
+
+/* Cost-preview readout inside the Auto card */
+.kit-readout {
+    margin-top: 0.55rem;
+    padding: 0.6rem 0.75rem;
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+}
+.kit-readout__row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.15rem 0;
+}
+.kit-readout__row + .kit-readout__row {
+    border-top: 1px dashed var(--border-soft);
+    margin-top: 0.2rem;
+    padding-top: 0.35rem;
+}
+.kit-readout__label {
+    font-family: var(--sans);
+    font-size: 0.74rem;
+    color: var(--sub);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.kit-readout__value {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: -0.015em;
+}
+.kit-readout__unit {
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--sub);
+    margin-left: 0.25rem;
+    letter-spacing: 0;
+}
+.kit-readout__hint {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    color: var(--sub);
+    line-height: 1.4;
+    margin-top: 0.45rem;
+    padding-top: 0.4rem;
+    border-top: 1px dashed var(--border-soft);
+}
+
+/* Tighten Streamlit slider inside the kit card */
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"]
+    [data-testid="stSlider"] [data-baseweb="slider"] {
+    margin-top: 0.2rem;
+}
+
+/* =============================================================================
+   Bahn-style result row — adapted to the studio palette.
+   Two-zone grid: main (chips · time + duration · segmented timeline · route)
+   plus a right rail with the dominant Netto-€ figure.
+   ========================================================================== */
+
+.bahn-row {
+    --row-accent: var(--accent);
+    display: grid;
+    grid-template-columns: 1fr 220px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-bottom: 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    overflow: hidden;
+    box-shadow: none;
+    margin: 0.6rem 0 0;
+    transition: border-color 200ms ease, box-shadow 240ms ease, transform 240ms ease;
+    animation: fade-up 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    position: relative;
+}
+.bahn-row::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--row-accent);
+    transition: width 240ms ease;
+}
+.bahn-row:hover {
+    border-color: var(--ink-soft);
+    box-shadow: var(--shadow);
+    transform: translateY(-1px);
+}
+.bahn-row:hover::before { width: 5px; }
+
+.bahn-row--alternative {
+    --row-accent: #BDBDB8;
+    box-shadow: var(--shadow-xs);
+    margin-top: 1.4rem;       /* breathing room between winner and alternative */
+}
+
+/* --- Main panel ---------------------------------------------------------- */
+.bahn-row__main {
+    padding: 1.0rem 1.4rem 1.15rem 1.55rem;
+    min-width: 0;            /* allow children to shrink, important for the bar */
+}
+
+.bahn-row__chips {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+}
+.bahn-row__chips-spacer { flex: 1; }
+
+.bahn-rank {
+    font-family: var(--sans);
+    font-size: 0.66rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--ink-soft);
+    padding: 0.18rem 0.6rem;
+    border-radius: 4px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    line-height: 1;
+}
+.bahn-rank--winner {
+    background: var(--ink);
+    color: #FFFFFF;
+    border-color: var(--ink);
+}
+.bahn-rank--alt {
+    background: var(--surface);
+    color: var(--sub);
+    border-color: var(--border);
+}
+
+.bahn-mode {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.2rem 0.6rem 0.2rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--ink-soft);
+    line-height: 1;
+    letter-spacing: -0.005em;
+}
+.bahn-mode__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.7);
+    flex: 0 0 auto;
+}
+.bahn-mode--transit {
+    background: var(--accent-soft);
+    border-color: rgba(236, 0, 22, 0.18);
+    color: var(--accent-deep);
+}
+.bahn-mode--car {
+    background: #FBF4E1;
+    border-color: rgba(184, 134, 11, 0.28);
+    color: #8a6307;
+}
+
+.bahn-row__sev {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    font-weight: 500;
+    padding: 0.15rem 0.55rem;
+    border-radius: 4px;
+    background: var(--danger-soft);
+    border: 1px solid rgba(199, 66, 30, 0.22);
+    color: var(--danger);
+    line-height: 1.2;
+}
+
+.bahn-row__notice {
+    font-family: var(--sans);
+    font-size: 0.74rem;
+    font-weight: 500;
+    color: #8a6307;
+    background: var(--warning-soft);
+    border: 1px solid rgba(184, 134, 11, 0.25);
+    padding: 0.18rem 0.55rem;
+    border-radius: 999px;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+/* --- Time + duration line ---------------------------------------------- */
+.bahn-row__head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    margin-bottom: 0.55rem;
+    flex-wrap: wrap;
+}
+.bahn-row__time {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    font-size: 1.45rem;
+    color: var(--ink);
+    letter-spacing: -0.025em;
+    line-height: 1.0;
+}
+.bahn-row__sep {
+    color: var(--border);
+    font-size: 1.0rem;
+    user-select: none;
+}
+.bahn-row__duration,
+.bahn-row__tours {
+    font-family: var(--sans);
+    font-size: 0.88rem;
+    font-weight: 500;
+    color: var(--sub);
+    letter-spacing: -0.005em;
+}
+
+/* --- Segmented bar (the differentiator) -------------------------------- */
+.bahn-row__bar {
+    display: flex;
+    align-items: stretch;
+    height: 30px;
+    margin: 0.4rem 0 0.55rem;
+    border-radius: 4px;
+    overflow: hidden;
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.5), rgba(0,0,0,0.04)),
+        var(--surface-3);
+    box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.45),
+        inset 0 -1px 0 rgba(14,14,12,0.06);
+    isolation: isolate;
+}
+.bahn-seg {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    min-width: 4px;
+    color: rgba(255,255,255,0.95);
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 0.78rem;
+    letter-spacing: -0.005em;
+    cursor: default;
+    transition: filter 180ms ease, z-index 0ms 180ms;
+    transform-origin: left center;
+    animation: seg-fade 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: calc(var(--i, 0) * 35ms + 80ms);
+}
+.bahn-seg + .bahn-seg {
+    border-left: 1px solid rgba(255, 255, 255, 0.7);
+}
+.bahn-seg:hover {
+    filter: brightness(1.08) saturate(1.1);
+    z-index: 1;
+    transition: filter 120ms ease;
+}
+.bahn-seg__label {
+    padding: 0 0.35rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 1px rgba(0,0,0,0.18);
+}
+.bahn-seg--tour {
+    background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+}
+.bahn-seg--transit {
+    background: linear-gradient(180deg, #C7C7C2, #A9A9A4);
+    color: #2C2C2A;
+}
+.bahn-seg--transit .bahn-seg__label { text-shadow: none; }
+
+/* Train glyph centered inside gray transit segments — visual cue that this
+   is a passenger ride between paid tours, not a paid tour itself. The pseudo
+   approach keeps it width-independent (no string interpolation) and is
+   hidden by .bahn-seg--narrow for very short transfers where it would
+   otherwise render as a clipped fragment. */
+.bahn-seg--transit::before {
+    content: "🚆";
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.92rem;
+    line-height: 1;
+    opacity: 0.62;
+    pointer-events: none;
+    filter: grayscale(0.4);
+}
+.bahn-seg--narrow::before { display: none; }
+.bahn-seg--car {
+    background: linear-gradient(180deg, #4A4239, #2C2823);
+}
+@keyframes seg-fade {
+    from { opacity: 0; transform: translateY(3px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Origin / destination strip --------------------------------------- */
+.bahn-row__route {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 0.6rem;
+    font-family: var(--sans);
+    font-size: 0.92rem;
+    font-weight: 500;
+    color: var(--ink-soft);
+    margin-top: 0.1rem;
+}
+.bahn-row__route-from { justify-self: start; }
+.bahn-row__route-to   { justify-self: end; }
+.bahn-row__route-rail {
+    height: 1px;
+    background: repeating-linear-gradient(
+        90deg,
+        var(--border) 0, var(--border) 4px,
+        transparent 4px, transparent 8px
+    );
+    align-self: center;
+}
+
+/* --- Right rail: prominent net-€ -------------------------------------- */
+.bahn-row__rail {
+    border-left: 1px solid var(--border);
+    background:
+        linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+    padding: 1.15rem 1.35rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 0.3rem;
+    text-align: right;
+}
+.bahn-row__rail-label {
+    font-family: var(--sans);
+    font-size: 0.66rem;
+    font-weight: 600;
+    color: var(--sub);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+}
+.bahn-row__rail-amount {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    font-size: 1.85rem;
+    color: var(--ink);
+    line-height: 1.0;
+    letter-spacing: -0.035em;
+}
+.bahn-row--alternative .bahn-row__rail-amount { color: var(--ink-soft); }
+
+.bahn-row__rail-sub {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.15rem;
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--border);
+    width: 100%;
+    font-family: var(--sans);
+    font-size: 0.74rem;
+    color: var(--sub);
+}
+.bahn-row__rail-sub > span {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.45rem;
+}
+.bahn-row__rail-sub .rs-k {
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--sub);
+}
+.bahn-row__rail-sub .rs-v {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.86rem;
+    color: var(--ink-soft);
+    font-weight: 500;
+}
+
+/* --- Details footer strip: visually inside the card via continuous styling ---
+   The bahn-row article is rendered with an open bottom (no bottom border, no
+   bottom radius, no shadow). The two element-containers below it — the
+   marker, then the button — are restyled to act as the card's footer:
+   matching side borders, a closing bottom radius and shadow on the button
+   container, and a continuous left accent rule that flows from the article
+   into the footer.
+
+   `:has()` is required (Chrome 105+, Safari 15.4+, Firefox 121+ — all in
+   scope for our 2026 audience). */
+
+/* Common: kill the default vertical-block gap so the article and its footer
+   sit flush against each other. */
+[data-testid="stElementContainer"]:has(> [data-testid="stMarkdownContainer"]
+    > .bahn-details-toggle),
+[data-testid="stElementContainer"]:has(> [data-testid="stMarkdownContainer"]
+    > .bahn-details-toggle)
+    + [data-testid="stElementContainer"] {
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    margin-top: 0;
+    position: relative;
+    --footer-accent: var(--accent);
+}
+
+/* Marker container: thin top of the footer with a dashed separator. */
+[data-testid="stElementContainer"]:has(> [data-testid="stMarkdownContainer"]
+    > .bahn-details-toggle) {
+    padding: 0;
+}
+.bahn-details-toggle {
+    height: 0;
+    border-top: 1px dashed var(--border);
+    margin: 0;
+}
+
+/* Button container: closes the card with a bottom border + radius + shadow. */
+[data-testid="stElementContainer"]:has(> [data-testid="stMarkdownContainer"]
+    > .bahn-details-toggle)
+    + [data-testid="stElementContainer"] {
+    border-bottom: 1px solid var(--border);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    padding: 0.4rem 1.4rem 0.55rem;
+    box-shadow: var(--shadow-sm);
+    margin-bottom: 0.4rem;
+}
+
+/* Continuous left accent rule across both containers — same Verkehrsrot the
+   article uses, picked up via the `--footer-accent` variable that we override
+   below for the alternative row. */
+[data-testid="stElementContainer"]:has(> [data-testid="stMarkdownContainer"]
+    > .bahn-details-toggle)::before,
+[data-testid="stElementContainer"]:has(> [data-testid="stMarkdownContainer"]
+    > .bahn-details-toggle)
+    + [data-testid="stElementContainer"]::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--footer-accent);
+}
+
+/* Alternative row: gray accent rule continuation (matches the article's
+   muted accent set on .bahn-row--alternative). */
+[data-testid="stElementContainer"]:has(.bahn-details-toggle[data-kind="alternative"]),
+[data-testid="stElementContainer"]:has(.bahn-details-toggle[data-kind="alternative"])
+    + [data-testid="stElementContainer"] {
+    --footer-accent: #BDBDB8;
+}
+
+/* The Details button itself — Bahn.de-style underlined chevron link, scoped
+   to *this* button only via the marker. */
+[data-testid="stElementContainer"]:has(> [data-testid="stMarkdownContainer"]
+    > .bahn-details-toggle)
+    + [data-testid="stElementContainer"] .stButton > button {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    color: var(--ink) !important;
+    font-family: var(--sans) !important;
+    font-weight: 500 !important;
+    font-size: 0.92rem !important;
+    text-decoration: underline;
+    text-decoration-color: var(--accent);
+    text-underline-offset: 5px;
+    text-decoration-thickness: 1.5px;
+    padding: 0.35rem 0.9rem !important;
+    transition: color 160ms ease, text-decoration-color 160ms ease,
+                background 160ms ease;
+}
+[data-testid="stElementContainer"]:has(> [data-testid="stMarkdownContainer"]
+    > .bahn-details-toggle)
+    + [data-testid="stElementContainer"] .stButton > button:hover {
+    background: var(--surface-2) !important;
+    color: var(--accent) !important;
+    transform: none !important;
+    text-decoration-color: var(--accent-dark);
+}
+
+/* Spacer between the closed card and the expanded details that follow. */
+.bahn-details-anchor {
+    height: 0;
+    margin: 0.8rem 0 0.4rem;
+}
+
+/* Narrow-screen fallback: stack the rail under the main panel */
+@media (max-width: 760px) {
+    .bahn-row {
+        grid-template-columns: 1fr;
+    }
+    .bahn-row__rail {
+        border-left: 0;
+        border-top: 1px solid var(--border);
+        flex-direction: row;
+        align-items: baseline;
+        justify-content: space-between;
+        text-align: left;
+    }
+    .bahn-row__rail-sub {
+        margin-top: 0;
+        padding-top: 0;
+        border-top: 0;
+        width: auto;
+    }
+}
+
+/* --- Eyebrows above each result section --------------------------------- */
+.result-eyebrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    margin: 1.6rem 0 0.55rem;
+}
+.result-eyebrow__label {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+}
+.result-eyebrow__count {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--sub);
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    padding: 0.12rem 0.55rem;
+    border-radius: 999px;
+    letter-spacing: -0.005em;
+}
+
+/* Streamlit pitfall: a `<div class="tagesplan">` opened in one st.markdown
+   call doesn't actually wrap subsequent widgets — each markdown call lives in
+   its own DOM subtree. Instead of a parent rail, we decorate each chain block
+   individually so the visual rhythm comes from the blocks themselves. */
+
+/* Tighten the connection-leg lines inside expanders */
+.leg-line {
+    padding: 0.2rem 0;
+    font-family: var(--sans);
+    font-size: 0.86rem;
+    color: var(--ink-soft);
+}
+.leg-line code {
+    font-size: 0.82rem;
+}
+.leg-line small {
+    color: var(--sub);
+    margin-left: 0.25rem;
+}
+

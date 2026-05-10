@@ -79,8 +79,11 @@ def _render_section_heading() -> None:
     )
 
 
-def _render_param_inputs(same_station: bool) -> tuple[time, time, int, int]:
-    col1, col2, col3, col4 = st.columns(4)
+def _render_param_inputs() -> tuple[time, time, int]:
+    """Time-window + transfer cap. Auto-Anfahrt lives in the sidebar's
+    Auto-Anfahrt panel — keeping the main-pane inputs to the three knobs
+    that always apply to every chain."""
+    col1, col2, col3 = st.columns(3)
     with col1:
         dep_str = st.text_input(
             "Früheste Abfahrt", value="04:00", placeholder="HH:MM",
@@ -103,20 +106,7 @@ def _render_param_inputs(same_station: bool) -> tuple[time, time, int, int]:
             min_value=10, max_value=240, value=60, step=10,
             help="Maximale Zeit zwischen Ende einer Tour und Beginn der nächsten (inkl. Leerfahrt)",
         )
-    with col4:
-        max_car_minutes = st.number_input(
-            "Max. Auto-Anfahrt (Min.)",
-            min_value=0, max_value=120, step=5,
-            value=0,
-            disabled=not same_station,
-            help=(
-                "Wie weit dürft ihr morgens mit dem Auto fahren, um den Startbahnhof "
-                "zu erreichen? 0 = kein Auto."
-                if same_station else
-                "Auto-Modus erfordert Ankunft = Abfahrt."
-            ),
-        )
-    return dep_time, ret_time, int(max_gap_minutes), int(max_car_minutes)
+    return dep_time, ret_time, int(max_gap_minutes)
 
 
 def _run_optimization(
@@ -196,12 +186,16 @@ def _render_empty_state(day_tours: list[Tour], ctx: SidebarContext) -> None:
             unsafe_allow_html=True,
         )
     else:
+        weekday = _WEEKDAYS_DE[ctx.selected_date.weekday()]
+        date_label = ctx.selected_date.strftime("%d.%m.%Y")
         st.markdown(
-            """
+            f"""
             <div class="empty-result">
-              Klicke <strong>Optimale Route berechnen</strong>,
-              um die einträglichste Tourenkette für den ausgewählten Tag zu finden.
-              <span class="hint">Die Berechnung prüft Anreise, Transfers und Rückreise mit Google Maps Transit.</span>
+              <strong>{len(day_tours)} Touren am {weekday}, {date_label} bereit.</strong>
+              <span class="hint">
+                Klicke oben <strong>Optimale Route berechnen</strong>
+                für die einträglichste Tourenkette ab {ctx.home_station}.
+              </span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -225,8 +219,12 @@ def _render_optimization_log() -> None:
                 st.text(msg)
 
 
-def _render_tour_browser(tours: list[Tour]) -> None:
-    with st.expander(f"Alle verfügbaren Touren  ·  {len(tours)} insgesamt", expanded=True):
+def _render_tour_browser(tours: list[Tour], day_count: int, expanded: bool) -> None:
+    label = (
+        f"Alle verfügbaren Touren  ·  {day_count} am Tag  ·  "
+        f"{len(tours)} insgesamt"
+    )
+    with st.expander(label, expanded=expanded):
         df = pd.DataFrame([
             {
                 "Tour-Nr": t.tour_nr,
@@ -274,12 +272,29 @@ def render_optimization_section(tours: list[Tour], ctx: SidebarContext) -> None:
     """Top-level main-pane rendering: plan-strip, optimization panel, result, tour browser."""
     day_tours = [t for t in tours if t.date == ctx.selected_date]
 
+    # Confirmation banner after a successful tour load. We pop the flags so
+    # they only trigger once. The same flag drives the auto-expanded tour
+    # browser at the bottom of the section, so we capture its value first.
+    just_loaded = bool(st.session_state.pop("tours_just_loaded", False))
+    discarded = bool(st.session_state.pop("tours_reload_discarded", False))
+    if just_loaded:
+        weekday = _WEEKDAYS_DE[ctx.selected_date.weekday()]
+        date_label = ctx.selected_date.strftime("%d.%m.%Y")
+        st.success(
+            f"{len(tours)} Touren geladen — davon {len(day_tours)} am "
+            f"{weekday}, {date_label}."
+        )
+        if discarded:
+            st.caption(
+                "Vorherige Optimierung verworfen — Daten frisch geladen."
+            )
+
     _render_plan_strip(
         ctx.selected_date, ctx.home_station, ctx.dest_station, ctx.same_station,
         len(day_tours),
     )
     _render_section_heading()
-    dep_time, ret_time, max_gap_minutes, max_car_minutes = _render_param_inputs(ctx.same_station)
+    dep_time, ret_time, max_gap_minutes = _render_param_inputs()
 
     if st.button(
         "Optimale Route berechnen",
@@ -287,7 +302,9 @@ def render_optimization_section(tours: list[Tour], ctx: SidebarContext) -> None:
         use_container_width=True,
         disabled=not day_tours or not ctx.home_station,
     ):
-        _run_optimization(day_tours, ctx, dep_time, ret_time, max_gap_minutes, max_car_minutes)
+        _run_optimization(
+            day_tours, ctx, dep_time, ret_time, max_gap_minutes, ctx.max_car_minutes,
+        )
 
     result = st.session_state.last_plan  # now Optional[OptimizationResult]
     if result is None:
@@ -299,4 +316,4 @@ def render_optimization_section(tours: list[Tour], ctx: SidebarContext) -> None:
         render_result(result)
         _render_optimization_log()
 
-    _render_tour_browser(tours)
+    _render_tour_browser(tours, day_count=len(day_tours), expanded=just_loaded)

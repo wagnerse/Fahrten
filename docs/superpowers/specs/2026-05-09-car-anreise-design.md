@@ -344,7 +344,7 @@ Test count target: 34 → ~45.
 3. `optimizer.py` — extract `_compute_transfer_matrix` already done. Add `optimize_day_car_mode` and `optimize_with_modes`. Algorithmic tests.
 4. `ui/sidebar.py` — fuel inputs.
 5. `ui/optimization.py` — Max. Auto-Anfahrt input, cap on max_gap_minutes, switch from `optimize_day` to `optimize_with_modes`, store `OptimizationResult` in session state.
-6. `ui/render.py` — winner card (net €, breakdown, car-leg blocks), alternative expander.
+6. `ui/render.py` — winner card (nno et €, breakdown, car-leg blocks), alternative expander.
 7. `ui/map.py` — amber dashed segments, updated legend.
 8. `assets/style.css` — `.auto-leg` block styling.
 9. `CLAUDE.md` — document the new flow and the OptimizationResult migration.
