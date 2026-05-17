@@ -135,12 +135,17 @@ class TestFindConnection:
             )
 
         assert conn is not None
-        assert len(conn.legs) == 3  # RE3, RE5, S1 (walking skipped)
+        # Walking leg is now included between the RE3 and RE5 transits.
+        assert len(conn.legs) == 4  # RE3, Fußweg, RE5, S1
         assert conn.legs[0].line == "RE3"
-        assert conn.legs[1].line == "RE5"
-        assert conn.legs[2].line == "S1"
+        assert conn.legs[1].line == "🚶 Fußweg"
+        assert conn.legs[2].line == "RE5"
+        assert conn.legs[3].line == "S1"
         assert conn.legs[0].departure_station == "Prenzlau"
-        assert conn.legs[2].arrival_station == "Warnemünde"
+        assert conn.legs[3].arrival_station == "Warnemünde"
+        # The walking step's start/end are the surrounding transit stops.
+        assert conn.legs[1].departure_station == "Berlin Hbf"
+        assert conn.legs[1].arrival_station == "Berlin Hbf"
 
     def test_returns_none_on_zero_results(self):
         mock_client = MagicMock()
@@ -324,3 +329,217 @@ class TestDrivingInfo:
         assert first == second
         # Cache should mean only ONE actual API call despite two function calls.
         assert mock_client.directions.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# S-Bahn name filter — used by nearby_park_stations to drop S-Bahn-only stops
+# ---------------------------------------------------------------------------
+
+class TestSBahnNameFilter:
+    """Conservative S-Bahn name filter: must not accidentally filter cities
+    that happen to start with the letter S."""
+
+    @pytest.mark.parametrize("name", [
+        "Stralsund Hauptbahnhof",
+        "Stralsund Hbf",
+        "Senftenberg",
+        "Schwedt (Oder)",
+        "Spandau",
+        "Berlin Friedrichstraße",
+        "Berlin Spandau",
+        "Südkreuz",
+        "Stendal",
+        "Schöneweide",
+        "Pasewalk",
+    ])
+    def test_keeps_regional_stations(self, name: str):
+        from transit_client import _is_pure_sbahn_name
+        assert _is_pure_sbahn_name(name) is False
+
+    @pytest.mark.parametrize("name", [
+        "S Wedding",
+        "S Friedrichstraße",
+        "S+U Berlin Friedrichstraße",
+        "S+U Hauptbahnhof",
+        "S-Bahnhof Schöneberg",
+        "S-Bahn Wedding",
+        "Berlin (S)",
+    ])
+    def test_drops_pure_sbahn_stops(self, name: str):
+        from transit_client import _is_pure_sbahn_name
+        assert _is_pure_sbahn_name(name) is True
+
+
+# ---------------------------------------------------------------------------
+# nearby_park_stations — Places API + driving-radius filter + S-Bahn drop
+# ---------------------------------------------------------------------------
+
+class TestNearbyParkStations:
+    """Discover train stations within driving radius of home.
+
+    All tests mock at the transit_client module level so the actual Google
+    Maps SDK is never invoked. Each test resets the module-level
+    _park_stations_cache so cache hits don't leak between tests.
+    """
+
+    def setup_method(self):
+        # Clear all module-level caches so each test starts fresh
+        from transit_client import (
+            _park_stations_cache, _station_cache, _driving_cache,
+        )
+        _park_stations_cache.clear()
+        _station_cache.clear()
+        _driving_cache.clear()
+
+    def _places_response(self, *names: str) -> dict:
+        """Build a Google Places API nearby-search-style response."""
+        return {
+            "status": "OK",
+            "results": [
+                {
+                    "name": name,
+                    "place_id": f"pid_{name.replace(' ', '_')}",
+                    "geometry": {"location": {"lat": 53.0, "lng": 13.5}},
+                    "types": ["train_station"],
+                }
+                for name in names
+            ],
+        }
+
+    def test_returns_filtered_sorted_truncated(self):
+        """Places returns 8 stations; 2 are S-Bahn → dropped by name filter.
+        Remaining 6 are filtered to those within 60min by driving_info; 4
+        survive that. Result is sorted by drive_min asc and truncated to
+        top_k=3 for this test."""
+        from transit_client import nearby_park_stations
+
+        places = self._places_response(
+            "Angermünde", "Pasewalk", "Eberswalde", "Templin",
+            "Schwedt (Oder)", "Neubrandenburg",
+            "S Wedding",            # filtered by name
+            "S+U Friedrichstraße",  # filtered by name
+        )
+        # drive_min for each (None means: not reachable / outside radius)
+        drive_minutes = {
+            "Angermünde": 30, "Pasewalk": 35, "Eberswalde": 45,
+            "Templin": 50, "Schwedt (Oder)": None, "Neubrandenburg": 75,
+        }
+        # lookup_station returns a stub with id + location
+        def lookup_side_effect(name):
+            return {"id": f"pid_{name}", "name": name,
+                    "location": {"lat": 53.0, "lng": 13.5}}
+        # driving_info(from_id=home, to_id=station_id) returns minutes from map
+        def driving_side_effect(from_id, to_id):
+            # to_id is "pid_<name>"
+            name = to_id[4:]
+            mins = drive_minutes.get(name)
+            return (mins, 30.0) if mins else None
+
+        with patch("transit_client.lookup_station",
+                   side_effect=lookup_side_effect), \
+             patch("transit_client.driving_info",
+                   side_effect=driving_side_effect), \
+             patch("transit_client._get_client") as mock_client:
+            mock_client.return_value.places_nearby.return_value = places
+            result = nearby_park_stations(
+                home_station="Prenzlau",
+                max_drive_minutes=60,
+                top_k=3,
+            )
+
+        # Schwedt drops (driving_info returned None).
+        # Neubrandenburg drops (75 > 60).
+        # 4 survivors sorted asc by drive_min: Angermünde, Pasewalk, Eberswalde, Templin.
+        # Truncated to top 3.
+        assert result == ["Angermünde", "Pasewalk", "Eberswalde"]
+
+    def test_skips_home_station_itself(self):
+        """If Places returns the home station as a result, it is dropped."""
+        from transit_client import nearby_park_stations
+
+        places = self._places_response("Prenzlau", "Pasewalk")
+
+        def lookup_side_effect(name):
+            return {"id": f"pid_{name}", "name": name,
+                    "location": {"lat": 53.0, "lng": 13.5}}
+
+        with patch("transit_client.lookup_station",
+                   side_effect=lookup_side_effect), \
+             patch("transit_client.driving_info", return_value=(30, 30.0)), \
+             patch("transit_client._get_client") as mock_client:
+            mock_client.return_value.places_nearby.return_value = places
+            result = nearby_park_stations(
+                home_station="Prenzlau",
+                max_drive_minutes=60,
+                top_k=15,
+            )
+
+        assert "Prenzlau" not in result
+        assert result == ["Pasewalk"]
+
+    def test_cache_hit_skips_places_call(self):
+        """A second call with same args returns the cached list without
+        re-invoking places_nearby."""
+        from transit_client import nearby_park_stations
+
+        places = self._places_response("Pasewalk")
+
+        def lookup_side_effect(name):
+            return {"id": f"pid_{name}", "name": name,
+                    "location": {"lat": 53.0, "lng": 13.5}}
+
+        with patch("transit_client.lookup_station",
+                   side_effect=lookup_side_effect), \
+             patch("transit_client.driving_info", return_value=(30, 30.0)), \
+             patch("transit_client._get_client") as mock_client:
+            mock_client.return_value.places_nearby.return_value = places
+            # First call: hits the API
+            nearby_park_stations("Prenzlau", 60, top_k=15)
+            # Second call: cache hit
+            nearby_park_stations("Prenzlau", 60, top_k=15)
+            # places_nearby should only have been called once.
+            assert mock_client.return_value.places_nearby.call_count == 1
+
+    def test_different_max_drive_minutes_is_separate_cache_entry(self):
+        """Calls with different max_drive_minutes don't share cache entries."""
+        from transit_client import nearby_park_stations
+
+        places = self._places_response("Pasewalk")
+
+        def lookup_side_effect(name):
+            return {"id": f"pid_{name}", "name": name,
+                    "location": {"lat": 53.0, "lng": 13.5}}
+
+        with patch("transit_client.lookup_station",
+                   side_effect=lookup_side_effect), \
+             patch("transit_client.driving_info", return_value=(30, 30.0)), \
+             patch("transit_client._get_client") as mock_client:
+            mock_client.return_value.places_nearby.return_value = places
+            nearby_park_stations("Prenzlau", 30, top_k=15)
+            nearby_park_stations("Prenzlau", 60, top_k=15)
+            # places_nearby called twice — once per unique (home, minutes) key.
+            assert mock_client.return_value.places_nearby.call_count == 2
+
+    def test_raises_transit_client_error_on_places_failure(self):
+        """If places_nearby raises, nearby_park_stations wraps it in
+        TransitClientError so the UI can render a specific dialog."""
+        from transit_client import nearby_park_stations, TransitClientError
+
+        with patch("transit_client.lookup_station",
+                   return_value={"id": "pid_home", "name": "Prenzlau",
+                                  "location": {"lat": 53.0, "lng": 13.5}}), \
+             patch("transit_client._get_client") as mock_client:
+            mock_client.return_value.places_nearby.side_effect = (
+                RuntimeError("quota exceeded")
+            )
+            with pytest.raises(TransitClientError):
+                nearby_park_stations("Prenzlau", 60, top_k=15)
+
+    def test_returns_empty_when_home_not_geocodable(self):
+        """If lookup_station returns None for the home station, we raise
+        TransitClientError because we cannot proceed."""
+        from transit_client import nearby_park_stations, TransitClientError
+
+        with patch("transit_client.lookup_station", return_value=None):
+            with pytest.raises(TransitClientError):
+                nearby_park_stations("UnknownTown", 60, top_k=15)

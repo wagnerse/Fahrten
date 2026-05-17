@@ -156,7 +156,7 @@ def run_optimizer(
          patch("optimizer.stations_match", side_effect=mock_stations_match):
 
         from optimizer import optimize_day
-        plan, _candidates = optimize_day(
+        plan, _candidates, _directly_reachable = optimize_day(
             tours=tours,
             home_station=home,
             dest_station=dest,
@@ -788,7 +788,8 @@ class TestCarMode:
         )))
 
         # Net: transit = 200, car = 215 - 20 = 195
-        with patch("optimizer.optimize_day", return_value=(transit_plan, [])), \
+        with patch("optimizer.optimize_day", return_value=(transit_plan, [], set())), \
+             patch("optimizer.nearby_park_stations", return_value=[]), \
              patch("optimizer.optimize_day_car_mode", return_value=(car_plan, [])):
             result = optimize_with_modes(
                 tours=[transit_plan.chain[0].tour, car_plan.chain[1].tour],
@@ -809,7 +810,7 @@ class TestCarMode:
         from optimizer import optimize_with_modes
         from models import DayPlan
 
-        with patch("optimizer.optimize_day", return_value=(DayPlan(), [])) as transit_mock, \
+        with patch("optimizer.optimize_day", return_value=(DayPlan(), [], set())) as transit_mock, \
              patch("optimizer.optimize_day_car_mode") as car_mock:
             optimize_with_modes(
                 tours=[],
@@ -1111,7 +1112,7 @@ class TestEfficiencyOptions:
                                          euros=30.0, outbound_min=60, inbound_min=60)
 
         with patch("optimizer.optimize_day",
-                   return_value=(winner_plan, [winner_plan, cheap_plan, mid_plan])), \
+                   return_value=(winner_plan, [winner_plan, cheap_plan, mid_plan], set())), \
              patch("optimizer.stations_match", return_value=False):
             result = optimize_with_modes(
                 tours=[],
@@ -1127,3 +1128,397 @@ class TestEfficiencyOptions:
         # cheap_plan has 40 min overhead, mid_plan has 120 min — cheap first
         nrs = [p.tours[0].tour_nr for p in result.efficiency_options]
         assert nrs == [501, 502]
+
+
+# ---------------------------------------------------------------------------
+# Hybrid car+transit Anreise
+# ---------------------------------------------------------------------------
+
+class TestHybridAnreise:
+    """Hybrid Anreise = car to a park-station + transit on to a tour-start.
+
+    Setup pattern shared by all tests:
+    - `tour` is the candidate hybrid tour: starts at Stralsund Hbf (≠ Pasewalk),
+      arrives at Angermünde. Worth 42.12 €.
+    - `decoy` is a do-nothing tour starting at Pasewalk at 03:00, BEFORE the
+      car arrives at the park (04:00). Its only purpose is to put "Pasewalk"
+      into `optimize_day_car_mode`'s candidate-set, which is derived from
+      `t.departure_station`. Because decoy.departure_dt < car_arrival, the
+      direct seed loop skips it, so it never contributes to the DP.
+    - `_setup_geocode` returns stable IDs for the relevant stations.
+    """
+
+    DAY_ISO = "2026-04-01"
+
+    def _setup_geocode(self):
+        return {
+            "Prenzlau":      {"id": "ChIJ_prenzlau",  "name": "Prenzlau"},
+            "Pasewalk":      {"id": "ChIJ_pasewalk",  "name": "Pasewalk"},
+            "Stralsund Hbf": {"id": "ChIJ_stralsund", "name": "Stralsund Hbf"},
+            "Angermünde":    {"id": "ChIJ_angerm",   "name": "Angermünde"},
+        }
+
+    def _decoy(self):
+        """Tour at Pasewalk that starts before car_arrival → puts Pasewalk
+        into the candidate-set but is never seeded by the direct loop."""
+        return make_tour(999000, "03:00", "Pasewalk", "03:30", "Pasewalk", 5.0)
+
+    def test_hybrid_seed_used_when_direct_anreise_failed(self):
+        """Tour 721174 starts at Stralsund. Pasewalk→Stralsund is reachable
+        by transit; Prenzlau→Stralsund directly is not. The optimizer should
+        build a hybrid chain car→Pasewalk, train→Stralsund, tour, train→Pasewalk, car→home."""
+        from optimizer import optimize_day_car_mode
+
+        tour = make_tour(721174, "06:12", "Stralsund Hbf", "08:25", "Angermünde", 42.12)
+        decoy = self._decoy()
+
+        anreise_transit = make_leg_conn(
+            "Pasewalk", f"{self.DAY_ISO}T04:16:00",
+            "Stralsund Hbf", f"{self.DAY_ISO}T05:30:00",
+            line="RE3",
+        )
+        return_transit = make_leg_conn(
+            "Angermünde", f"{self.DAY_ISO}T08:30:00",
+            "Pasewalk", f"{self.DAY_ISO}T09:00:00",
+            line="RE3",
+        )
+
+        def reachability_router(from_id, to_id, earliest_dep, must_arrive):
+            if from_id == "ChIJ_pasewalk" and to_id == "ChIJ_stralsund":
+                return anreise_transit
+            if from_id == "ChIJ_angerm" and to_id == "ChIJ_pasewalk":
+                return return_transit
+            return None
+
+        with patch("optimizer.batch_lookup_stations",
+                   return_value=self._setup_geocode()), \
+             patch("optimizer.driving_info", return_value=(30, 32.0)), \
+             patch("optimizer.check_reachability_with_ids",
+                   side_effect=reachability_router):
+            plan, _candidates = optimize_day_car_mode(
+                tours=[tour, decoy],
+                home_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(3, 30)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=60,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+                directly_reachable_tour_nrs=set(),
+            )
+
+        assert plan.num_tours == 1
+        assert plan.tours[0].tour_nr == 721174
+        types = [link.type for link in plan.chain]
+        assert types == ["car_outbound", "outbound", "tour", "inbound", "car_inbound"]
+        assert plan.chain[1].connection is anreise_transit  # the hybrid Anreise leg
+
+    def test_hybrid_lookup_skipped_when_tour_directly_reachable(self):
+        """When 721174 is in directly_reachable_tour_nrs, the optimizer must
+        NOT make the Pasewalk→Stralsund reachability call. We assert on the
+        call log, which makes this test independent of plan emptiness."""
+        from optimizer import optimize_day_car_mode
+
+        tour = make_tour(721174, "06:12", "Stralsund Hbf", "08:25", "Angermünde", 42.12)
+        decoy = self._decoy()
+
+        reachability_calls: list[tuple] = []
+
+        def reachability_router(from_id, to_id, earliest_dep, must_arrive):
+            reachability_calls.append((from_id, to_id))
+            return None  # nothing reachable in either direction
+
+        with patch("optimizer.batch_lookup_stations",
+                   return_value=self._setup_geocode()), \
+             patch("optimizer.driving_info", return_value=(30, 32.0)), \
+             patch("optimizer.check_reachability_with_ids",
+                   side_effect=reachability_router):
+            optimize_day_car_mode(
+                tours=[tour, decoy],
+                home_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(3, 30)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=60,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+                directly_reachable_tour_nrs={721174},
+            )
+
+        # The hybrid lookup Pasewalk → Stralsund Hbf must NEVER be called.
+        # (Other lookups — e.g. transit-back-to-park for other candidates —
+        # are unrelated and we don't constrain them here.)
+        assert ("ChIJ_pasewalk", "ChIJ_stralsund") not in reachability_calls
+
+    def test_hybrid_seed_skipped_when_no_transit_from_park(self):
+        """Direct Anreise failed AND transit park→tour-start unreachable →
+        the Stralsund tour does NOT appear in the result chain. Decoy tour
+        may or may not appear — we only assert about 721174."""
+        from optimizer import optimize_day_car_mode
+
+        tour = make_tour(721174, "06:12", "Stralsund Hbf", "08:25", "Angermünde", 42.12)
+        decoy = self._decoy()
+
+        with patch("optimizer.batch_lookup_stations",
+                   return_value=self._setup_geocode()), \
+             patch("optimizer.driving_info", return_value=(30, 32.0)), \
+             patch("optimizer.check_reachability_with_ids", return_value=None):
+            plan, _candidates = optimize_day_car_mode(
+                tours=[tour, decoy],
+                home_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(3, 30)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=60,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+                directly_reachable_tour_nrs=set(),
+            )
+
+        tour_nrs_in_chain = [t.tour_nr for t in plan.tours]
+        assert 721174 not in tour_nrs_in_chain
+
+    def test_hybrid_seed_skipped_when_transit_too_late(self):
+        """Transit Pasewalk→Stralsund exists but arrives after the
+        must-arrive-by deadline. The Stralsund tour is not seeded."""
+        from optimizer import optimize_day_car_mode
+
+        tour = make_tour(721174, "06:12", "Stralsund Hbf", "08:25", "Angermünde", 42.12)
+        decoy = self._decoy()
+
+        # In production, check_reachability_with_ids enforces the deadline
+        # itself and returns None when no train arrives in time. We mimic
+        # that by returning None whenever must_arrive_by is tighter than the
+        # only available train (arrives 06:10, deadline 06:07).
+        def reachability_router(from_id, to_id, earliest_dep, must_arrive):
+            if from_id == "ChIJ_pasewalk" and to_id == "ChIJ_stralsund":
+                # Only train available arrives 06:10 → too late for 06:07 deadline.
+                return None
+            return None
+
+        with patch("optimizer.batch_lookup_stations",
+                   return_value=self._setup_geocode()), \
+             patch("optimizer.driving_info", return_value=(30, 32.0)), \
+             patch("optimizer.check_reachability_with_ids",
+                   side_effect=reachability_router):
+            plan, _candidates = optimize_day_car_mode(
+                tours=[tour, decoy],
+                home_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(3, 30)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=60,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+                directly_reachable_tour_nrs=set(),
+            )
+
+        tour_nrs_in_chain = [t.tour_nr for t in plan.tours]
+        assert 721174 not in tour_nrs_in_chain
+
+
+class TestOptimizeWithModesHybrid:
+    """End-to-end: optimize_with_modes plumbs directly_reachable through to
+    car-mode and the hybrid pass surfaces tours that direct transit missed.
+    """
+
+    def test_directly_reachable_set_is_forwarded_to_car_mode(self):
+        """The set returned by optimize_day arrives at optimize_day_car_mode."""
+        from optimizer import optimize_with_modes
+        from models import DayPlan
+
+        sentinel_set = {12345, 67890}
+
+        with patch("optimizer.optimize_day",
+                   return_value=(DayPlan(), [], sentinel_set)), \
+             patch("optimizer.stations_match", return_value=True), \
+             patch("optimizer.nearby_park_stations", return_value=[]), \
+             patch("optimizer.optimize_day_car_mode",
+                   return_value=(DayPlan(), [])) as car_mock:
+            optimize_with_modes(
+                tours=[],
+                home_station="Prenzlau", dest_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(4, 0)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=30,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+            )
+
+        # Inspect the kwargs the car-mode mock was called with.
+        car_mock.assert_called_once()
+        kwargs = car_mock.call_args.kwargs
+        assert kwargs["directly_reachable_tour_nrs"] == sentinel_set
+
+    def test_end_to_end_pasewalk_scenario(self):
+        """Tour starts at Stralsund (not reachable by direct transit from Prenzlau)
+        but IS reachable via car-to-Pasewalk + RE3 Pasewalk→Stralsund. The
+        winner is the hybrid plan.
+
+        A `decoy` tour at Pasewalk (starts 03:00, before car arrival)
+        gets Pasewalk into the candidate-set without affecting the DP."""
+        from optimizer import optimize_with_modes
+
+        tour = make_tour(721174, "06:12", "Stralsund Hbf", "08:25", "Angermünde", 42.12)
+        decoy = make_tour(999000, "03:00", "Pasewalk", "03:30", "Pasewalk", 5.0)
+
+        anreise_transit = make_leg_conn(
+            "Pasewalk", "2026-04-01T04:16:00",
+            "Stralsund Hbf", "2026-04-01T05:30:00",
+            line="RE3",
+        )
+        return_transit = make_leg_conn(
+            "Angermünde", "2026-04-01T08:30:00",
+            "Pasewalk", "2026-04-01T09:00:00",
+            line="RE3",
+        )
+
+        geocode = {
+            "Prenzlau":      {"id": "ChIJ_prenzlau",  "name": "Prenzlau"},
+            "Pasewalk":      {"id": "ChIJ_pasewalk",  "name": "Pasewalk"},
+            "Stralsund Hbf": {"id": "ChIJ_stralsund", "name": "Stralsund Hbf"},
+            "Angermünde":    {"id": "ChIJ_angerm",   "name": "Angermünde"},
+        }
+
+        def reachability_router(from_id, to_id, earliest_dep, must_arrive):
+            # Direct Prenzlau → anything: unreachable (no early train Prenzlau→Stralsund).
+            if from_id == "ChIJ_prenzlau":
+                return None
+            # Anything → Prenzlau: default unreachable for this test; only the
+            # car-mode plan is meaningful and it doesn't need a Rückreise to Prenzlau
+            # (the car drives back from the park-station).
+            if to_id == "ChIJ_prenzlau":
+                return None
+            # Pasewalk → Stralsund: feasible (hybrid Anreise).
+            if from_id == "ChIJ_pasewalk" and to_id == "ChIJ_stralsund":
+                return anreise_transit
+            # Angermünde → Pasewalk: feasible (transit-back-to-park).
+            if from_id == "ChIJ_angerm" and to_id == "ChIJ_pasewalk":
+                return return_transit
+            return None
+
+        with patch("optimizer.batch_lookup_stations", return_value=geocode), \
+             patch("optimizer.driving_info", return_value=(30, 32.0)), \
+             patch("optimizer.check_reachability_with_ids",
+                   side_effect=reachability_router), \
+             patch("optimizer.nearby_park_stations", return_value=[]):
+            result = optimize_with_modes(
+                tours=[tour, decoy],
+                home_station="Prenzlau", dest_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(3, 30)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=60,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+            )
+
+        # Transit-only plan is empty (no direct Anreise to Stralsund or Pasewalk).
+        # Car-mode via Pasewalk hybrid wins, picking the high-value tour 721174.
+        assert result.winner.num_tours == 1
+        assert result.winner.has_car_legs
+        assert result.winner.tours[0].tour_nr == 721174
+        types = [link.type for link in result.winner.chain]
+        assert types == ["car_outbound", "outbound", "tour", "inbound", "car_inbound"]
+
+
+# ---------------------------------------------------------------------------
+# optimize_with_modes auto-discovers park-stations via Places API
+# ---------------------------------------------------------------------------
+
+class TestOptimizeWithModesAutoPark:
+    """optimize_with_modes auto-calls nearby_park_stations when car-mode is
+    active and forwards the result to optimize_day_car_mode as
+    additional_park_stations."""
+
+    def test_nearby_called_when_car_mode_active(self):
+        from optimizer import optimize_with_modes
+        from models import DayPlan
+
+        with patch("optimizer.optimize_day",
+                   return_value=(DayPlan(), [], set())), \
+             patch("optimizer.stations_match", return_value=True), \
+             patch("optimizer.nearby_park_stations",
+                   return_value=["Pasewalk", "Angermünde"]) as nearby_mock, \
+             patch("optimizer.optimize_day_car_mode",
+                   return_value=(DayPlan(), [])):
+            optimize_with_modes(
+                tours=[],
+                home_station="Prenzlau", dest_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(4, 0)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=30,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+            )
+
+        nearby_mock.assert_called_once()
+        # max_drive_minutes positional or kwarg — accept either
+        call = nearby_mock.call_args
+        all_args = list(call.args) + list(call.kwargs.values())
+        assert 30 in all_args
+
+    def test_nearby_not_called_when_car_mode_off(self):
+        """max_car_minutes=0 → no Places API call."""
+        from optimizer import optimize_with_modes
+        from models import DayPlan
+
+        with patch("optimizer.optimize_day",
+                   return_value=(DayPlan(), [], set())), \
+             patch("optimizer.nearby_park_stations") as nearby_mock, \
+             patch("optimizer.optimize_day_car_mode",
+                   return_value=(DayPlan(), [])):
+            optimize_with_modes(
+                tours=[],
+                home_station="Prenzlau", dest_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(4, 0)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=0,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+            )
+        nearby_mock.assert_not_called()
+
+    def test_nearby_not_called_when_dest_differs(self):
+        """Car-mode is only active when home==dest; otherwise the Places API
+        is not consulted."""
+        from optimizer import optimize_with_modes
+        from models import DayPlan
+
+        with patch("optimizer.optimize_day",
+                   return_value=(DayPlan(), [], set())), \
+             patch("optimizer.stations_match", return_value=False), \
+             patch("optimizer.nearby_park_stations") as nearby_mock:
+            optimize_with_modes(
+                tours=[],
+                home_station="Prenzlau", dest_station="Stralsund",
+                earliest_departure=datetime.combine(DAY, time(4, 0)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=30,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+            )
+        nearby_mock.assert_not_called()
+
+    def test_discovered_stations_passed_to_car_mode(self):
+        """The list returned by nearby_park_stations arrives at
+        optimize_day_car_mode as additional_park_stations."""
+        from optimizer import optimize_with_modes
+        from models import DayPlan
+
+        sentinel = ["Pasewalk", "Angermünde", "Eberswalde"]
+
+        with patch("optimizer.optimize_day",
+                   return_value=(DayPlan(), [], set())), \
+             patch("optimizer.stations_match", return_value=True), \
+             patch("optimizer.nearby_park_stations", return_value=sentinel), \
+             patch("optimizer.optimize_day_car_mode",
+                   return_value=(DayPlan(), [])) as car_mock:
+            optimize_with_modes(
+                tours=[],
+                home_station="Prenzlau", dest_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(4, 0)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=30,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+            )
+
+        car_mock.assert_called_once()
+        kwargs = car_mock.call_args.kwargs
+        assert kwargs["additional_park_stations"] == sentinel

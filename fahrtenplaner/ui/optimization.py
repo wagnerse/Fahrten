@@ -13,6 +13,7 @@ import streamlit as st
 
 from models import DayPlan, OptimizationResult, Tour
 from optimizer import optimize_with_modes
+from transit_client import TransitClientError
 from .errors import report_error
 from .feedback import render_feedback_button
 from .render import render_result
@@ -164,19 +165,33 @@ def _run_optimization(
     }
 
     if opt_exc is not None:
-        report_error(
-            "Optimierung fehlgeschlagen",
-            details=(
-                f"Datum: {ctx.selected_date.strftime('%d.%m.%Y')}\n"
-                f"Route: {ctx.home_station} → "
-                f"{ctx.home_station if ctx.same_station else ctx.dest_station}\n"
-                f"Touren am Tag: {len(day_tours)}\n"
-                f"Fenster: {dep_time:%H:%M}–{ret_time:%H:%M}, "
-                f"max. Pause: {max_gap_minutes} Min, max. Auto: {max_car_minutes} Min\n"
-                f"Letzter Schritt: {(log_messages[-1] if log_messages else '—')}"
-            ),
-            exc=opt_exc,
-        )
+        if isinstance(opt_exc, TransitClientError):
+            report_error(
+                "Park-Bahnhof-Suche fehlgeschlagen",
+                details=(
+                    f"Beim Suchen nach Park-Bahnhöfen im Umkreis von "
+                    f"{max_car_minutes} Min hat Google Maps Places einen "
+                    f"Fehler gemeldet.\n\n"
+                    f"Tipp: Auto-Anfahrt vorübergehend ausschalten "
+                    f"(Schieber auf 0) und nur die Tour-Bahnhöfe als "
+                    f"Park-Optionen verwenden, oder gleich nochmal versuchen."
+                ),
+                exc=opt_exc,
+            )
+        else:
+            report_error(
+                "Optimierung fehlgeschlagen",
+                details=(
+                    f"Datum: {ctx.selected_date.strftime('%d.%m.%Y')}\n"
+                    f"Route: {ctx.home_station} → "
+                    f"{ctx.home_station if ctx.same_station else ctx.dest_station}\n"
+                    f"Touren am Tag: {len(day_tours)}\n"
+                    f"Fenster: {dep_time:%H:%M}–{ret_time:%H:%M}, "
+                    f"max. Pause: {max_gap_minutes} Min, max. Auto: {max_car_minutes} Min\n"
+                    f"Letzter Schritt: {(log_messages[-1] if log_messages else '—')}"
+                ),
+                exc=opt_exc,
+            )
 
 
 def _render_empty_state(day_tours: list[Tour], ctx: SidebarContext) -> None:

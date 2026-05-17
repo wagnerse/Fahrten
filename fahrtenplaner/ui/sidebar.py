@@ -228,8 +228,10 @@ def _render_auto_panel(same_station: bool) -> int:
             value=int(st.session_state.max_car_minutes),
             disabled=not same_station,
             help=(
-                "Wie weit dürft ihr morgens mit dem Auto fahren, um den Startbahnhof "
-                "zu erreichen?  0 = ausschließlich ÖPNV."
+                "Wie weit dürft ihr morgens mit dem Auto fahren, um den "
+                "Startbahnhof zu erreichen? 0 = ausschließlich ÖPNV. "
+                "Park-Bahnhöfe werden automatisch im Umkreis gesucht — "
+                "reine S-Bahn-Stops bleiben unberücksichtigt."
                 if same_station
                 else "Auto-Modus erfordert Ankunft = Abfahrt."
             ),

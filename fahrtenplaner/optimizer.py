@@ -14,6 +14,7 @@ from transit_client import (
     batch_lookup_stations,
     check_reachability_with_ids,
     driving_info,
+    nearby_park_stations,
     stations_match,
 )
 
@@ -32,6 +33,20 @@ LATEST_RETURN_GRACE_HOURS = 4
 # the user can pick a plan with a better revenue-per-hour ratio.
 EFFICIENCY_TOP_K: int = 5            # how many alternatives to show
 EFFICIENCY_MIN_NET_EUROS: float = 10.0  # drop micro-trips that ruin signal/noise
+
+# Safety cap for the hybrid car+transit Anreise pass. Per park-station
+# candidate, at most this many transit lookups (candidate → tour-start)
+# are made. Tours are sorted by revenue desc so the most valuable ones
+# survive the cap. In practice the skip-direct-reachable prune brings
+# the per-candidate count well below 20; this is insurance against
+# pathological days with many high-value remote tours.
+HYBRID_MAX_API_LOOKUPS_PER_CANDIDATE: int = 20
+
+# Auto-discovered park-stations cap: top-K nearby train stations (by driving
+# time ascending) that are added to the car-mode candidate set. Each one
+# costs one driving_info call and up to HYBRID_MAX_API_LOOKUPS_PER_CANDIDATE
+# transit lookups during the hybrid pass.
+AUTO_PARK_STATIONS_TOP_K: int = 15
 
 NEG_INF = float("-inf")
 
@@ -463,7 +478,7 @@ def optimize_day(
     latest_return: datetime,
     progress_callback: ProgressCb = None,
     max_transfer_gap_hours: float = MAX_TRANSFER_GAP_HOURS,
-) -> tuple[DayPlan, list[DayPlan]]:
+) -> tuple[DayPlan, list[DayPlan], set[int]]:
     """
     Berechnet die optimale Tourenkette für einen Tag.
 
@@ -477,7 +492,7 @@ def optimize_day(
         max_transfer_gap_hours: Maximale Wartezeit zwischen Touren in Stunden
     """
     if not tours:
-        return DayPlan(), []
+        return DayPlan(), [], set()
 
     latest_return_hard = latest_return + timedelta(hours=LATEST_RETURN_GRACE_HOURS)
     report = _normalize_progress(progress_callback)
@@ -492,20 +507,27 @@ def optimize_day(
     dest_id = get_id(dest_station)
     if not home_id:
         report(1.0, f"Station '{home_station}' nicht gefunden!")
-        return DayPlan(), []
+        return DayPlan(), [], set()
     if not dest_id:
         report(1.0, f"Station '{dest_station}' nicht gefunden!")
-        return DayPlan(), []
+        return DayPlan(), [], set()
     report(0.05, f"{len(station_names)} Stationen aufgelöst")
 
     # ----- Phase 1: Anreise --------------------------------------------------
     outbound, api1 = _compute_outbound(
         tours, home_station, home_id, get_id, earliest_departure, report,
     )
+    # Snapshot which tours are directly reachable by transit from home,
+    # keyed by tour_nr (stable across the subsequent filter+sort). The
+    # hybrid car-mode pass uses this to skip tours that don't benefit
+    # from going via a park-station.
+    directly_reachable: set[int] = {
+        t.tour_nr for t, conn in zip(tours, outbound) if conn is not None
+    }
     tours, outbound = _filter_and_sort_reachable(tours, outbound)
     if not tours:
         report(1.0, "Keine Tour von zuhause erreichbar!")
-        return DayPlan(), []
+        return DayPlan(), [], directly_reachable
     report(0.20, f"Phase 1/3 fertig: {len(tours)} Touren erreichbar")
 
     # ----- Phase 2: Transfer matrix -----------------------------------------
@@ -530,7 +552,7 @@ def optimize_day(
     best_j = _find_best_chain_end(dp, inbound)
     if best_j == -1:
         report(1.0, "Keine gültige Tourenkette gefunden.")
-        return DayPlan(), candidates
+        return DayPlan(), candidates, directly_reachable
     chain_indices = _reconstruct_chain(pred, best_j)
 
     # ----- DayPlan synthesis ------------------------------------------------
@@ -541,7 +563,7 @@ def optimize_day(
         f"Fertig! {plan.num_tours} Touren, {plan.total_euros:.2f}€ "
         f"({api_calls} API-Calls)",
     )
-    return plan, candidates
+    return plan, candidates, directly_reachable
 
 
 def optimize_day_car_mode(
@@ -553,6 +575,9 @@ def optimize_day_car_mode(
     fuel_consumption: float,
     fuel_price: float,
     fuel_refund_per_km: float = 0.0,
+    *,
+    directly_reachable_tour_nrs: set[int] = frozenset(),
+    additional_park_stations: list[str] = (),
     progress_callback: ProgressCb = None,
     max_transfer_gap_hours: float = MAX_TRANSFER_GAP_HOURS,
 ) -> tuple[DayPlan, list[DayPlan]]:
@@ -567,20 +592,40 @@ def optimize_day_car_mode(
     report = _normalize_progress(progress_callback)
 
     # Resolve all stations once (shared with potential transit pass via cache).
+    # Include auto-discovered park-stations so the candidate loop below can
+    # geocode them; without this, get_id(candidate) returns None for every
+    # park station that doesn't already appear as a tour departure/arrival.
     station_names = _collect_station_names(tours, home_station, home_station)
+    station_names.update(additional_park_stations)
     station_ids = batch_lookup_stations(list(station_names))
     get_id = _id_lookup(station_ids)
     home_id = get_id(home_station)
     if not home_id:
         return DayPlan(), []
 
-    # Build the transit transfer matrix once (shared with sister transit-mode call).
-    sorted_tours = sorted(tours, key=lambda t: t.departure_dt)
+    # Candidate park-stations include every tour's departure station plus
+    # any explicitly-discovered nearby park-stations (passed by the caller).
+    # Even tours that depart before `earliest_departure` contribute their
+    # station name (they can't anchor a car chain themselves, but their
+    # station may still be a viable park spot for *other* tours via the
+    # hybrid Anreise pass).
+    candidates = sorted(
+        {t.departure_station for t in tours}
+        | set(additional_park_stations)
+    )
+
+    # Build the transit transfer matrix once (shared across all candidates).
+    # Drop tours whose departure is before `earliest_departure`: the user
+    # cannot physically be at any park-station before then, so such tours can
+    # never appear in any car chain. Including them would compute useless
+    # transfer edges and waste Maps-API quota.
+    sorted_tours = sorted(
+        (t for t in tours if t.departure_dt >= earliest_departure),
+        key=lambda t: t.departure_dt,
+    )
     edge, _ = _compute_transfer_matrix(
         sorted_tours, get_id, max_transfer_gap_hours, report,
     )
-
-    candidates = sorted({t.departure_station for t in sorted_tours})
 
     # Kilometerpauschale offsets fuel — can drive cost_per_km negative when the
     # refund exceeds actual fuel cost, which is a real-world outcome (the user
@@ -610,12 +655,18 @@ def optimize_day_car_mode(
         plan = _build_car_chain_for_candidate(
             sorted_tours, edge, candidate, drive_min, drive_km, cost_per_km,
             earliest_departure, latest_return_hard, home_station, get_id,
+            directly_reachable_tour_nrs=directly_reachable_tour_nrs,
         )
         if plan.num_tours == 0:
             continue
         car_candidates.append(plan)
-        if plan.net_euros > best_plan.net_euros:
+        if _car_plan_score(plan) < _car_plan_score(best_plan):
             best_plan = plan
+
+    # Order car_candidates so the dedupe pass in _build_efficiency_options
+    # keeps the SHORTEST-drive plan when several park-stations cover the same
+    # tour set. Same score function as the winner selection.
+    car_candidates.sort(key=_car_plan_score)
 
     if best_plan.num_tours > 0:
         report(1.0, f"Auto-Modus fertig: {best_plan.total_euros:.2f} € brutto")
@@ -623,6 +674,15 @@ def optimize_day_car_mode(
         report(1.0, "Auto-Modus: keine Kette gefunden")
 
     return best_plan, car_candidates
+
+
+def _car_plan_score(plan: DayPlan) -> tuple[float, float]:
+    """Comparison key for car-mode plans (lower is better): maximise gross,
+    then minimise overhead (car + transit). net_euros would game the
+    Kilometerpauschale by rewarding longer drives; gross+overhead doesn't.
+    Walking legs in the Anreise (e.g. Pasewalk Ost → Pasewalk Hbf transfer)
+    show up in overhead, so the cleaner park-station naturally wins."""
+    return (-plan.total_euros, plan.overhead_duration.total_seconds())
 
 
 def _build_car_chain_for_candidate(
@@ -636,6 +696,8 @@ def _build_car_chain_for_candidate(
     latest_return_hard: datetime,
     home_station: str,
     get_id: Callable[[str], Optional[str]],
+    *,
+    directly_reachable_tour_nrs: set[int] = frozenset(),
 ) -> DayPlan:
     """Run the constrained DAG-DP for one candidate car-park station and
     materialize the resulting chain into a DayPlan with car legs.
@@ -670,6 +732,35 @@ def _build_car_chain_for_candidate(
                 continue  # transit reaches this tour from home → no car needed
         dp[i] = tour.euros
 
+    # Seed (hybrid): tours whose start station is reachable by transit from the
+    # candidate park-station within the time budget. Only considered for tours
+    # that were NOT directly reachable from home (no benefit otherwise) and
+    # that do not start at the candidate (already handled above).
+    #
+    # Cap at HYBRID_MAX_API_LOOKUPS_PER_CANDIDATE highest-value tours so the
+    # Maps API cost stays bounded on pathological days.
+    hybrid_anreise: dict[int, Connection] = {}
+    cand_id = get_id(candidate)
+    eligible_for_hybrid = [
+        (i, t) for i, t in enumerate(tours)
+        if not stations_match(t.departure_station, candidate)
+        and t.tour_nr not in directly_reachable_tour_nrs
+        and t.departure_dt >= car_arrival + timedelta(minutes=MIN_TRANSFER_MINUTES)
+    ]
+    eligible_for_hybrid.sort(key=lambda pair: -pair[1].euros)
+    for i, tour in eligible_for_hybrid[:HYBRID_MAX_API_LOOKUPS_PER_CANDIDATE]:
+        start_id = get_id(tour.departure_station)
+        if not start_id or not cand_id:
+            continue
+        must_arrive_by = tour.departure_dt - timedelta(minutes=MIN_TRANSFER_MINUTES)
+        transit_conn = check_reachability_with_ids(
+            cand_id, start_id, car_arrival, must_arrive_by,
+        )
+        if transit_conn is None:
+            continue
+        dp[i] = tour.euros
+        hybrid_anreise[i] = transit_conn
+
     # Standard DAG-DP transition (uses shared transfer matrix).
     for j in range(n):
         for i in range(j):
@@ -684,16 +775,24 @@ def _build_car_chain_for_candidate(
     # AND for which transit cannot bring us home directly (same fallback rule:
     # if there's a train home from the chain's end, we don't drive back).
     return_conn_per_tour: dict[int, Optional[Connection]] = {}  # j → Connection (None = direct)
-    cand_id = get_id(candidate)
     for j, val in enumerate(dp):
         if val == NEG_INF:
             continue
         arr_station = tours[j].arrival_station
         arr_dt = tours[j].arrival_dt
 
-        # Evening fallback check: skip end-tours where transit reaches home.
+        # Did this chain's first tour need a hybrid Anreise? If so, the car
+        # is parked at the candidate station — we MUST drive it home, even
+        # if transit also goes home. The evening fallback check only applies
+        # when the morning leg was a direct seed (i.e. transit was an
+        # available alternative for the whole trip).
+        chain_start = _reconstruct_chain(pred, j)[0]
+        is_hybrid_chain = chain_start in hybrid_anreise
+
+        # Evening fallback check: skip end-tours where transit reaches home
+        # (only for direct-seeded chains; hybrid chains depend on the car).
         arr_id_for_home = get_id(arr_station)
-        if home_id and arr_id_for_home:
+        if not is_hybrid_chain and home_id and arr_id_for_home:
             transit_home = check_reachability_with_ids(
                 arr_id_for_home, home_id,
                 arr_dt + transfer_buffer, latest_return_hard,
@@ -733,6 +832,18 @@ def _build_car_chain_for_candidate(
             minutes=drive_min, km=drive_km, cost=leg_cost,
         ),
     ))
+    # Hybrid Anreise: insert the transit leg from candidate → tour-start
+    # before the first tour, when that tour was seeded via the hybrid pass.
+    first_idx = chain_indices[0]
+    if first_idx in hybrid_anreise:
+        conn = hybrid_anreise[first_idx]
+        warning = (
+            "Schienenersatzverkehr auf der Anreise!"
+            if conn.has_replacement_service else None
+        )
+        plan.chain.append(ChainLink(
+            type="outbound", connection=conn, warning=warning,
+        ))
     for pos, idx in enumerate(chain_indices):
         plan.chain.append(ChainLink(type="tour", tour=tours[idx]))
         if pos < len(chain_indices) - 1:
@@ -769,7 +880,7 @@ def optimize_with_modes(
     winner + alternative. Net euros (gross − fuel cost) decides the winner.
     Tie → transit wins (no car needed).
     """
-    transit_plan, transit_candidates = optimize_day(
+    transit_plan, transit_candidates, directly_reachable = optimize_day(
         tours, home_station, dest_station,
         earliest_departure, latest_return,
         progress_callback=progress_callback,
@@ -779,11 +890,19 @@ def optimize_with_modes(
     car_plan: DayPlan = DayPlan()
     car_candidates: list[DayPlan] = []
     if max_car_minutes > 0 and stations_match(home_station, dest_station):
+        # Auto-discover nearby park-stations (Places API). Raises
+        # TransitClientError on failure; caller (UI) catches it.
+        park_stations = nearby_park_stations(
+            home_station, max_drive_minutes=max_car_minutes,
+            top_k=AUTO_PARK_STATIONS_TOP_K,
+        )
         car_plan, car_candidates = optimize_day_car_mode(
             tours, home_station,
             earliest_departure, latest_return,
             max_car_minutes, fuel_consumption, fuel_price,
             fuel_refund_per_km=fuel_refund_per_km,
+            directly_reachable_tour_nrs=directly_reachable,
+            additional_park_stations=park_stations,
             progress_callback=progress_callback,
             max_transfer_gap_hours=max_transfer_gap_hours,
         )

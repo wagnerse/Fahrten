@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time as time_mod
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
@@ -15,6 +16,42 @@ import googlemaps
 from models import Connection, Leg
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class TransitClientError(Exception):
+    """Raised when a Google Maps API call fails in a way that should bubble
+    up to the UI as a user-visible error rather than degrading silently.
+
+    Today's pattern in this module (e.g. lookup_station, find_connection)
+    is to log + return None on any exception. That works for routing-style
+    calls where the optimizer treats None as "unreachable". For
+    `nearby_park_stations`, however, returning [] silently would hide
+    Places API quota exhaustion or auth failures from the user. This
+    exception lets the UI render a specific dialog instead.
+    """
+
+
+# ---------------------------------------------------------------------------
+# S-Bahn name filter
+# ---------------------------------------------------------------------------
+
+# Conservative pattern — must only match unambiguous S-Bahn-only naming.
+# Cities starting with "S" followed by a letter (Stralsund, Senftenberg,
+# Schwedt, Spandau, ...) are NOT matched.
+_S_BAHN_NAME_PATTERN: re.Pattern[str] = re.compile(
+    r"^(S\s|S\+)"           # "S Wedding", "S+U Friedrichstraße"
+    r"|\bS-Bahn(hof)?\b"    # "S-Bahn Wedding", "S-Bahnhof Köpenick"
+    r"|\s\(S\)$"            # "Berlin (S)" — some data sources
+)
+
+
+def _is_pure_sbahn_name(name: str) -> bool:
+    """True iff the station name unambiguously looks like an S-Bahn-only stop."""
+    return bool(_S_BAHN_NAME_PATTERN.search(name))
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +91,11 @@ def _get_client() -> googlemaps.Client:
 _station_cache: dict[str, Optional[dict]] = {}
 _connection_cache: dict[str, Optional[Connection]] = {}
 _driving_cache: dict[str, Optional[tuple[int, float]]] = {}
+
+# Module-level cache for nearby_park_stations. Key: (home_station_name,
+# max_drive_minutes). Lifetime: same as the other caches — survives Streamlit
+# reruns within one process, resets on worker restart.
+_park_stations_cache: dict[tuple[str, int], list[str]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +225,105 @@ def driving_info(from_id: str, to_id: str) -> Optional[tuple[int, float]]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Park-station discovery (Google Places Nearby Search)
+# ---------------------------------------------------------------------------
+
+def nearby_park_stations(
+    home_station: str,
+    max_drive_minutes: int,
+    top_k: int = 15,
+) -> list[str]:
+    """Discover train stations within driving radius of home.
+
+    Calls Google Maps Places Nearby Search once per session per
+    (home_station, max_drive_minutes) pair (cached). Filters out S-Bahn-only
+    stops by name pattern, drops stations outside the driving radius using
+    driving_info, drops the home station itself, sorts by drive_min asc,
+    truncates to top_k.
+
+    Raises TransitClientError if home_station cannot be geocoded or if
+    Places Nearby Search fails. Returns [] when the API succeeds but no
+    surviving candidates exist.
+    """
+    cache_key = (home_station, max_drive_minutes)
+    if cache_key in _park_stations_cache:
+        return _park_stations_cache[cache_key]
+
+    home = lookup_station(home_station)
+    if home is None or not home.get("location") or not home.get("id"):
+        raise TransitClientError(
+            f"Heimatbahnhof '{home_station}' konnte nicht geocodiert werden."
+        )
+    home_lat = home["location"]["lat"]
+    home_lng = home["location"]["lng"]
+    home_id = home["id"]
+
+    # Places Nearby Search caps radius at 50 km. With ~60 km/h secondary-road
+    # speed the Luftlinie radius equals about max_drive_minutes; the cap
+    # only matters for unusually large max_drive_minutes settings.
+    radius_km = min(50, max_drive_minutes)
+    radius_m = radius_km * 1000
+
+    try:
+        client = _get_client()
+        response = client.places_nearby(
+            location=(home_lat, home_lng),
+            radius=radius_m,
+            type="train_station",
+            language="de",
+        )
+    except Exception as exc:
+        raise TransitClientError(
+            f"Google Places Nearby Search fehlgeschlagen: {exc}"
+        ) from exc
+
+    results = response.get("results", []) if isinstance(response, dict) else []
+
+    # Filter, geocode, drive-time check
+    candidates_with_time: list[tuple[int, str]] = []
+    for entry in results:
+        name = entry.get("name")
+        if not name:
+            continue
+        if _is_pure_sbahn_name(name):
+            continue
+        # Drop home itself by name (cheap pre-check before geocoding)
+        if name == home_station:
+            continue
+        # Geocode via the standard pipeline so the result is consistent with
+        # how the optimizer treats stations elsewhere.
+        info = lookup_station(name)
+        if not info or not info.get("id"):
+            continue
+        # Skip home if name differed but geocoded to the same place_id
+        if info["id"] == home_id:
+            continue
+        drive = driving_info(home_id, info["id"])
+        if drive is None:
+            continue
+        drive_min, _drive_km = drive
+        if drive_min > max_drive_minutes:
+            continue
+        candidates_with_time.append((drive_min, name))
+
+    # Deduplicate exact-name repeats (Places API sometimes returns the same
+    # station twice). Keep the first occurrence (closest by drive after sort).
+    candidates_with_time.sort(key=lambda pair: pair[0])
+    seen: set[str] = set()
+    park_stations: list[str] = []
+    for _drive, name in candidates_with_time:
+        if name in seen:
+            continue
+        seen.add(name)
+        park_stations.append(name)
+        if len(park_stations) >= top_k:
+            break
+
+    _park_stations_cache[cache_key] = park_stations
+    return park_stations
+
+
 def _is_replacement_service(line_name: str, vehicle_type: str) -> bool:
     """A bus line whose name contains SEV/ERSATZ is a Schienenersatzverkehr."""
     if vehicle_type != "BUS":
@@ -192,10 +333,7 @@ def _is_replacement_service(line_name: str, vehicle_type: str) -> bool:
 
 
 def _parse_transit_step(step: dict) -> Optional[Leg]:
-    """Parse a single Google Maps step into a Leg, or return None if it's not transit."""
-    if step.get("travel_mode") != "TRANSIT":
-        return None
-
+    """Parse a single Google Maps TRANSIT step into a Leg."""
     td = step.get("transit_details") or {}
     dep_ts = td.get("departure_time", {}).get("value")
     arr_ts = td.get("arrival_time", {}).get("value")
@@ -216,15 +354,75 @@ def _parse_transit_step(step: dict) -> Optional[Leg]:
     )
 
 
+_WALKING_LINE_LABEL: str = "🚶 Fußweg"
+# Skip walks shorter than this — they're typically platform changes within
+# the same station and just clutter the chain rendering.
+_MIN_WALK_SECONDS: int = 120
+
+
 def _parse_route(route: dict) -> Optional[Connection]:
-    """Parse a Google Maps route into a Connection with transit Legs."""
+    """Parse a Google Maps route into a Connection of TRANSIT + WALKING legs.
+    Walking is kept so a transfer like Pasewalk Ost → Pasewalk Hbf is visible
+    in the chain (and counted in overhead time)."""
     parsed_legs: list[Leg] = []
-    for leg in route.get("legs", []):
-        for step in leg.get("steps", []):
-            parsed = _parse_transit_step(step)
-            if parsed is not None:
+    for outer_leg in route.get("legs", []):
+        dep_ts = outer_leg.get("departure_time", {}).get("value")
+        if dep_ts is None:
+            # No time anchor → can't position walking legs; skip them.
+            for step in outer_leg.get("steps", []):
+                if step.get("travel_mode") == "TRANSIT":
+                    parsed = _parse_transit_step(step)
+                    if parsed is not None:
+                        parsed_legs.append(parsed)
+            continue
+
+        # Running clock: TRANSIT steps carry absolute timestamps; WALKING
+        # uses the clock advanced by the step's duration.
+        current_dt = datetime.fromtimestamp(dep_ts)
+        last_arrival_station: str = ""
+        for step in outer_leg.get("steps", []):
+            mode = step.get("travel_mode")
+            if mode == "TRANSIT":
+                parsed = _parse_transit_step(step)
+                if parsed is None:
+                    continue
                 parsed_legs.append(parsed)
-    return Connection(legs=parsed_legs) if parsed_legs else None
+                current_dt = parsed.arrival_time
+                last_arrival_station = parsed.arrival_station
+            elif mode == "WALKING":
+                duration_sec = step.get("duration", {}).get("value", 0)
+                walk_end = current_dt + timedelta(seconds=duration_sec)
+                # Always advance the clock, but only emit a Leg when the walk
+                # is non-trivial — short walks are platform changes within a
+                # station, not real transfers.
+                if duration_sec >= _MIN_WALK_SECONDS:
+                    parsed_legs.append(Leg(
+                        departure_station=last_arrival_station,
+                        departure_time=current_dt,
+                        arrival_station="",  # filled below
+                        arrival_time=walk_end,
+                        line=_WALKING_LINE_LABEL,
+                        is_replacement_service=False,
+                    ))
+                current_dt = walk_end
+
+    # Fill arrival_station from the next non-walking leg. Walking legs with
+    # no following transit are trailing platform-to-exit walks and get dropped
+    # — the user is already at the destination station for our purposes.
+    filled: list[Leg] = []
+    for i, leg in enumerate(parsed_legs):
+        if leg.line == _WALKING_LINE_LABEL and not leg.arrival_station:
+            target = next(
+                (n.departure_station for n in parsed_legs[i + 1:]
+                 if n.line != _WALKING_LINE_LABEL),
+                "",
+            )
+            if not target:
+                continue  # trailing walk → drop
+            leg.arrival_station = target
+        filled.append(leg)
+
+    return Connection(legs=filled) if filled else None
 
 
 # ---------------------------------------------------------------------------
