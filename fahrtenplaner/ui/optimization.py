@@ -14,6 +14,7 @@ import streamlit as st
 from models import DayPlan, OptimizationResult, Tour
 from optimizer import optimize_with_modes
 from .errors import report_error
+from .feedback import render_feedback_button
 from .render import render_result
 from .sidebar import SidebarContext
 
@@ -136,6 +137,7 @@ def _run_optimization(
             max_car_minutes=max_car_minutes,
             fuel_consumption=st.session_state.fuel_consumption,
             fuel_price=st.session_state.fuel_price,
+            fuel_refund_per_km=st.session_state.fuel_refund_per_km,
             progress_callback=progress_cb,
             max_transfer_gap_hours=max_gap_minutes / 60,
         )
@@ -146,6 +148,20 @@ def _run_optimization(
     progress_bar.empty()
     st.session_state.last_plan = result
     st.session_state.last_plan_log = log_messages
+    st.session_state.last_plan_inputs = {
+        "date":                     ctx.selected_date.isoformat(),
+        "home_station":             ctx.home_station,
+        "dest_station":             ctx.dest_station,
+        "same_station":             ctx.same_station,
+        "earliest_departure":       dep_time.strftime("%H:%M"),
+        "latest_return":            ret_time.strftime("%H:%M"),
+        "max_transfer_gap_minutes": max_gap_minutes,
+        "max_car_minutes":          max_car_minutes,
+        "fuel_consumption":         float(st.session_state.fuel_consumption),
+        "fuel_price":               float(st.session_state.fuel_price),
+        "fuel_refund_per_km":       float(st.session_state.fuel_refund_per_km),
+        "selected_bundeslaender":   st.session_state.get("myres_states", []),
+    }
 
     if opt_exc is not None:
         report_error(
@@ -315,5 +331,9 @@ def render_optimization_section(tours: list[Tour], ctx: SidebarContext) -> None:
     else:
         render_result(result)
         _render_optimization_log()
+        render_feedback_button(
+            result, ctx, tours,
+            inputs=st.session_state.get("last_plan_inputs"),
+        )
 
     _render_tour_browser(tours, day_count=len(day_tours), expanded=just_loaded)

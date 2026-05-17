@@ -28,6 +28,11 @@ MAX_TRANSFER_GAP_HOURS = 12
 # their preferred time if it earns more revenue.
 LATEST_RETURN_GRACE_HOURS = 4
 
+# Effort-ranked alternatives — surfaced alongside the max-revenue winner so
+# the user can pick a plan with a better revenue-per-hour ratio.
+EFFICIENCY_TOP_K: int = 5            # how many alternatives to show
+EFFICIENCY_MIN_NET_EUROS: float = 10.0  # drop micro-trips that ruin signal/noise
+
 NEG_INF = float("-inf")
 
 # Type alias for the progress callback we pass into helpers.
@@ -321,6 +326,73 @@ def _reconstruct_chain(pred: list[int], best_j: int) -> list[int]:
     return indices
 
 
+def _enumerate_chain_candidates(
+    tours: list[Tour],
+    outbound: list[Optional[Connection]],
+    edge: list[list[Optional[Connection]]],
+    inbound: list[Optional[Connection]],
+    dp: list[float],
+    pred: list[int],
+) -> list[DayPlan]:
+    """Reconstruct one DayPlan per valid end-tour.
+
+    The DP table already encodes 'best chain ending at j' for every j; this
+    just reads each entry out as its own materialized chain. No extra search.
+    Skips entries with NEG_INF (no chain ends here) or missing inbound.
+    """
+    plans: list[DayPlan] = []
+    for j, val in enumerate(dp):
+        if val == NEG_INF or inbound[j] is None:
+            continue
+        chain_indices = _reconstruct_chain(pred, j)
+        plans.append(
+            _build_dayplan(tours, chain_indices, outbound, edge, inbound)
+        )
+    return plans
+
+
+def _plan_identity(plan: DayPlan) -> tuple:
+    """Stable key for deduplication and exclusion comparison.
+
+    Two plans are 'the same' when they hit the same tour numbers in the same
+    order AND share the same mode (transit vs. car). Different routings
+    (e.g. different transfer waits) between the same tours collapse to one
+    entry — the user only sees the chain, not the underlying routing.
+    """
+    return (
+        tuple(t.tour_nr for t in plan.tours),
+        plan.has_car_legs,
+    )
+
+
+def _build_efficiency_options(
+    candidates: list[DayPlan],
+    excluded: list[DayPlan],
+) -> list[DayPlan]:
+    """Filter, dedupe, exclude, sort, truncate.
+
+    Returns the top EFFICIENCY_TOP_K plans ordered by `overhead_duration`
+    ascending (tie-break: higher net_euros first).
+    """
+    excluded_ids = {_plan_identity(p) for p in excluded if p.num_tours > 0}
+
+    seen: set[tuple] = set()
+    keep: list[DayPlan] = []
+    for plan in candidates:
+        if plan.num_tours == 0:
+            continue
+        if plan.net_euros < EFFICIENCY_MIN_NET_EUROS:
+            continue
+        ident = _plan_identity(plan)
+        if ident in excluded_ids or ident in seen:
+            continue
+        seen.add(ident)
+        keep.append(plan)
+
+    keep.sort(key=lambda p: (p.overhead_duration, -p.net_euros))
+    return keep[:EFFICIENCY_TOP_K]
+
+
 # ---------------------------------------------------------------------------
 # DayPlan synthesis
 # ---------------------------------------------------------------------------
@@ -391,7 +463,7 @@ def optimize_day(
     latest_return: datetime,
     progress_callback: ProgressCb = None,
     max_transfer_gap_hours: float = MAX_TRANSFER_GAP_HOURS,
-) -> DayPlan:
+) -> tuple[DayPlan, list[DayPlan]]:
     """
     Berechnet die optimale Tourenkette für einen Tag.
 
@@ -405,7 +477,7 @@ def optimize_day(
         max_transfer_gap_hours: Maximale Wartezeit zwischen Touren in Stunden
     """
     if not tours:
-        return DayPlan()
+        return DayPlan(), []
 
     latest_return_hard = latest_return + timedelta(hours=LATEST_RETURN_GRACE_HOURS)
     report = _normalize_progress(progress_callback)
@@ -420,10 +492,10 @@ def optimize_day(
     dest_id = get_id(dest_station)
     if not home_id:
         report(1.0, f"Station '{home_station}' nicht gefunden!")
-        return DayPlan()
+        return DayPlan(), []
     if not dest_id:
         report(1.0, f"Station '{dest_station}' nicht gefunden!")
-        return DayPlan()
+        return DayPlan(), []
     report(0.05, f"{len(station_names)} Stationen aufgelöst")
 
     # ----- Phase 1: Anreise --------------------------------------------------
@@ -433,7 +505,7 @@ def optimize_day(
     tours, outbound = _filter_and_sort_reachable(tours, outbound)
     if not tours:
         report(1.0, "Keine Tour von zuhause erreichbar!")
-        return DayPlan()
+        return DayPlan(), []
     report(0.20, f"Phase 1/3 fertig: {len(tours)} Touren erreichbar")
 
     # ----- Phase 2: Transfer matrix -----------------------------------------
@@ -450,10 +522,15 @@ def optimize_day(
     report(0.78, "Optimiere Tourenkette (DAG-DP)...")
     dp, pred = _run_dag_dp(tours, outbound, edge)
     report(0.88, "Beste Route wird rekonstruiert...")
+
+    candidates = _enumerate_chain_candidates(
+        tours, outbound, edge, inbound, dp, pred,
+    )
+
     best_j = _find_best_chain_end(dp, inbound)
     if best_j == -1:
         report(1.0, "Keine gültige Tourenkette gefunden.")
-        return DayPlan()
+        return DayPlan(), candidates
     chain_indices = _reconstruct_chain(pred, best_j)
 
     # ----- DayPlan synthesis ------------------------------------------------
@@ -464,7 +541,7 @@ def optimize_day(
         f"Fertig! {plan.num_tours} Touren, {plan.total_euros:.2f}€ "
         f"({api_calls} API-Calls)",
     )
-    return plan
+    return plan, candidates
 
 
 def optimize_day_car_mode(
@@ -475,15 +552,16 @@ def optimize_day_car_mode(
     max_car_minutes: int,
     fuel_consumption: float,
     fuel_price: float,
+    fuel_refund_per_km: float = 0.0,
     progress_callback: ProgressCb = None,
     max_transfer_gap_hours: float = MAX_TRANSFER_GAP_HOURS,
-) -> DayPlan:
+) -> tuple[DayPlan, list[DayPlan]]:
     """Find the best chain that starts AND ends at a tour-departure station
     within `max_car_minutes` driving radius from `home_station`. The user drives
     to that station, does the tour chain, then drives back from there.
     """
     if not tours or max_car_minutes <= 0:
-        return DayPlan()
+        return DayPlan(), []
 
     latest_return_hard = latest_return + timedelta(hours=LATEST_RETURN_GRACE_HOURS)
     report = _normalize_progress(progress_callback)
@@ -494,7 +572,7 @@ def optimize_day_car_mode(
     get_id = _id_lookup(station_ids)
     home_id = get_id(home_station)
     if not home_id:
-        return DayPlan()
+        return DayPlan(), []
 
     # Build the transit transfer matrix once (shared with sister transit-mode call).
     sorted_tours = sorted(tours, key=lambda t: t.departure_dt)
@@ -504,8 +582,12 @@ def optimize_day_car_mode(
 
     candidates = sorted({t.departure_station for t in sorted_tours})
 
-    cost_per_km = (fuel_consumption / 100.0) * fuel_price
+    # Kilometerpauschale offsets fuel — can drive cost_per_km negative when the
+    # refund exceeds actual fuel cost, which is a real-world outcome (the user
+    # earns money per km). The optimizer handles that naturally.
+    cost_per_km = (fuel_consumption / 100.0) * fuel_price - fuel_refund_per_km
     best_plan = DayPlan()
+    car_candidates: list[DayPlan] = []
 
     report(0.0, f"Auto-Modus: prüfe {len(candidates)} Kandidaten...")
 
@@ -529,6 +611,9 @@ def optimize_day_car_mode(
             sorted_tours, edge, candidate, drive_min, drive_km, cost_per_km,
             earliest_departure, latest_return_hard, home_station, get_id,
         )
+        if plan.num_tours == 0:
+            continue
+        car_candidates.append(plan)
         if plan.net_euros > best_plan.net_euros:
             best_plan = plan
 
@@ -537,7 +622,7 @@ def optimize_day_car_mode(
     else:
         report(1.0, "Auto-Modus: keine Kette gefunden")
 
-    return best_plan
+    return best_plan, car_candidates
 
 
 def _build_car_chain_for_candidate(
@@ -560,14 +645,30 @@ def _build_car_chain_for_candidate(
     """
     n = len(tours)
     car_arrival = earliest_departure + timedelta(minutes=drive_min)
+    home_id = get_id(home_station)
+    transfer_buffer = timedelta(minutes=MIN_TRANSFER_MINUTES)
 
     dp: list[float] = [NEG_INF] * n
     pred: list[int] = [-1] * n
 
-    # Seed: tours that start at the candidate station after car arrival.
+    # Seed: tours that start at the candidate AND are NOT reachable from home by
+    # transit. Car is a fallback, not a profit center — if a train works for the
+    # morning leg, we don't take the car (otherwise the Kilometerpauschale could
+    # turn an unnecessary drive into a fake "profit").
     for i, tour in enumerate(tours):
-        if stations_match(tour.departure_station, candidate) and tour.departure_dt >= car_arrival:
-            dp[i] = tour.euros
+        if not stations_match(tour.departure_station, candidate):
+            continue
+        if tour.departure_dt < car_arrival:
+            continue
+        dep_id = get_id(tour.departure_station)
+        if home_id and dep_id:
+            transit_out = check_reachability_with_ids(
+                home_id, dep_id, earliest_departure,
+                tour.departure_dt - transfer_buffer,
+            )
+            if transit_out is not None:
+                continue  # transit reaches this tour from home → no car needed
+        dp[i] = tour.euros
 
     # Standard DAG-DP transition (uses shared transfer matrix).
     for j in range(n):
@@ -579,7 +680,9 @@ def _build_car_chain_for_candidate(
                 dp[j] = new_val
                 pred[j] = i
 
-    # Best end: tour ending at candidate (direct) or reachable by transit back to candidate.
+    # End: tour ending at candidate (direct) or reachable by transit back to it —
+    # AND for which transit cannot bring us home directly (same fallback rule:
+    # if there's a train home from the chain's end, we don't drive back).
     return_conn_per_tour: dict[int, Optional[Connection]] = {}  # j → Connection (None = direct)
     cand_id = get_id(candidate)
     for j, val in enumerate(dp):
@@ -587,19 +690,28 @@ def _build_car_chain_for_candidate(
             continue
         arr_station = tours[j].arrival_station
         arr_dt = tours[j].arrival_dt
+
+        # Evening fallback check: skip end-tours where transit reaches home.
+        arr_id_for_home = get_id(arr_station)
+        if home_id and arr_id_for_home:
+            transit_home = check_reachability_with_ids(
+                arr_id_for_home, home_id,
+                arr_dt + transfer_buffer, latest_return_hard,
+            )
+            if transit_home is not None:
+                continue  # transit goes home from here → no car-back needed
+
         # Direct: tour already ends at the candidate station
         if stations_match(arr_station, candidate):
             if arr_dt + timedelta(minutes=drive_min) <= latest_return_hard:
                 return_conn_per_tour[j] = None  # marks "direct end, no transit-back needed"
             continue
         # Indirect: need transit from arr_station back to S
-        arr_id = get_id(arr_station)
-        if not arr_id or not cand_id:
+        if not arr_id_for_home or not cand_id:
             continue
-        return_buffer = timedelta(minutes=MIN_TRANSFER_MINUTES)
         must_arrive_by = latest_return_hard - timedelta(minutes=drive_min)
         return_conn = check_reachability_with_ids(
-            arr_id, cand_id, arr_dt + return_buffer, must_arrive_by,
+            arr_id_for_home, cand_id, arr_dt + transfer_buffer, must_arrive_by,
         )
         if return_conn is not None:
             return_conn_per_tour[j] = return_conn
@@ -649,6 +761,7 @@ def optimize_with_modes(
     max_car_minutes: int,
     fuel_consumption: float,
     fuel_price: float,
+    fuel_refund_per_km: float = 0.0,
     progress_callback: ProgressCb = None,
     max_transfer_gap_hours: float = MAX_TRANSFER_GAP_HOURS,
 ) -> OptimizationResult:
@@ -656,7 +769,7 @@ def optimize_with_modes(
     winner + alternative. Net euros (gross − fuel cost) decides the winner.
     Tie → transit wins (no car needed).
     """
-    transit_plan = optimize_day(
+    transit_plan, transit_candidates = optimize_day(
         tours, home_station, dest_station,
         earliest_departure, latest_return,
         progress_callback=progress_callback,
@@ -664,26 +777,39 @@ def optimize_with_modes(
     )
 
     car_plan: DayPlan = DayPlan()
+    car_candidates: list[DayPlan] = []
     if max_car_minutes > 0 and stations_match(home_station, dest_station):
-        car_plan = optimize_day_car_mode(
+        car_plan, car_candidates = optimize_day_car_mode(
             tours, home_station,
             earliest_departure, latest_return,
             max_car_minutes, fuel_consumption, fuel_price,
+            fuel_refund_per_km=fuel_refund_per_km,
             progress_callback=progress_callback,
             max_transfer_gap_hours=max_transfer_gap_hours,
         )
 
-    candidates = [p for p in (transit_plan, car_plan) if p.num_tours > 0]
-    if not candidates:
-        return OptimizationResult(winner=DayPlan(), alternative=None,
-                                  latest_return_target=latest_return)
+    plans = [p for p in (transit_plan, car_plan) if p.num_tours > 0]
+    if not plans:
+        return OptimizationResult(
+            winner=DayPlan(), alternative=None,
+            efficiency_options=[],
+            latest_return_target=latest_return,
+        )
 
     # Sort by net euros desc, tie-break: transit wins (no car legs).
-    candidates.sort(key=lambda p: (-p.net_euros, p.has_car_legs))
-    winner = candidates[0]
-    alternative = candidates[1] if len(candidates) > 1 else None
-    return OptimizationResult(winner=winner, alternative=alternative,
-                              latest_return_target=latest_return)
+    plans.sort(key=lambda p: (-p.net_euros, p.has_car_legs))
+    winner = plans[0]
+    alternative = plans[1] if len(plans) > 1 else None
+
+    efficiency_options = _build_efficiency_options(
+        candidates=transit_candidates + car_candidates,
+        excluded=[winner] + ([alternative] if alternative else []),
+    )
+    return OptimizationResult(
+        winner=winner, alternative=alternative,
+        efficiency_options=efficiency_options,
+        latest_return_target=latest_return,
+    )
 
 
 def _check_transfer_warning(

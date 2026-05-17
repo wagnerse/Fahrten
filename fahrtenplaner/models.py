@@ -154,6 +154,30 @@ class DayPlan:
         )
 
     @property
+    def overhead_duration(self) -> timedelta:
+        """Aufwand: sum of all non-tour durations in the chain.
+
+        Outbound + transfer + inbound connection durations are counted, plus
+        any car-leg minutes. Paid tour durations are NOT counted — the user
+        considers those productive time, not effort cost.
+        """
+        total = timedelta(0)
+        for link in self.chain:
+            if link.connection and link.connection.duration:
+                total += link.connection.duration
+            if link.car_leg is not None:
+                total += timedelta(minutes=link.car_leg.minutes)
+        return total
+
+    @property
+    def euros_per_hour(self) -> float:
+        """Net euros divided by overhead hours. 0.0 when overhead is zero
+        (degenerate case — never happens in real chains because outbound
+        always carries at least a few minutes of platform time)."""
+        hours = self.overhead_duration.total_seconds() / 3600
+        return self.net_euros / hours if hours > 0 else 0.0
+
+    @property
     def net_euros(self) -> float:
         """Gross revenue minus fuel cost — the comparison key for winner selection."""
         return self.total_euros - self.total_costs
@@ -197,6 +221,7 @@ class OptimizationResult:
     """A primary plan + an optional alternative for side-by-side comparison."""
     winner: DayPlan
     alternative: Optional["DayPlan"] = None
+    efficiency_options: list["DayPlan"] = field(default_factory=list)
     latest_return_target: Optional[datetime] = None  # user's preferred return time
 
     @property

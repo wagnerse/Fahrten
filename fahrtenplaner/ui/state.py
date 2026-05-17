@@ -27,12 +27,36 @@ def init_session_state() -> None:
     if "fuel_consumption" not in st.session_state:
         st.session_state.fuel_consumption = 7.0
     if "fuel_price" not in st.session_state:
-        st.session_state.fuel_price = 1.79
+        st.session_state.fuel_price = 2.00
+    if "fuel_refund_per_km" not in st.session_state:
+        st.session_state.fuel_refund_per_km = 0.20
     if "max_car_minutes" not in st.session_state:
-        st.session_state.max_car_minutes = 0
+        st.session_state.max_car_minutes = 60
 
     # Datum picker default. Seeded here (rather than via `value=` on the widget)
     # so the demo loader's deferred update doesn't trigger Streamlit's
     # "default value but also session_state" warning.
     if "datum_input" not in st.session_state:
         st.session_state.datum_input = date.today()
+
+    # Inputs captured at the moment of the last optimization (consumed by the
+    # feedback dialog so it can describe what the user actually ran).
+    if "last_plan_inputs" not in st.session_state:
+        st.session_state.last_plan_inputs = None
+
+    # Selected Bundesländer — persisted so the feedback payload can include them
+    # (the sidebar's _render_data_source_panel writes here on every render).
+    if "myres_states" not in st.session_state:
+        st.session_state.myres_states = []
+
+    # Feedback dialog state. Cleared after a successful submission.
+    if "feedback_dialog_open" not in st.session_state:
+        st.session_state.feedback_dialog_open = False
+    if "feedback_text" not in st.session_state:
+        st.session_state.feedback_text = ""
+    if "feedback_type" not in st.session_state:
+        st.session_state.feedback_type = None
+    if "feedback_last_error" not in st.session_state:
+        st.session_state.feedback_last_error = None
+    if "feedback_last_issue_number" not in st.session_state:
+        st.session_state.feedback_last_issue_number = None

@@ -151,6 +151,12 @@ The app is shipped as a single-user Windows desktop binary, so there's no auth g
 - `GOOGLE_MAPS_API_KEY` — required. Read from `st.secrets` first, then env var. The app degrades to an error in `transit_client.py::_get_client` without it.
 - `[myres]` block in `secrets.toml` (optional) — pre-fills login fields.
 - `[auth]` block in `secrets.toml` (optional) — enables login gate.
+- `[github]` block in `secrets.toml` (optional) — enables in-app feedback. When
+  present, a "💬 Feedback zu dieser Route senden" button appears under each
+  optimization result; submissions become GitHub issues in the configured repo.
+  Required keys: `token` (fine-grained PAT scoped to `issues: write` on `repo`)
+  and `repo` (`owner/name`). If absent or incomplete, the feedback button is
+  hidden. See `fahrtenplaner/feedback_client.py` for the wire format.
 - `.streamlit/secrets.toml` is gitignored. Never commit it.
 
 ## Domain glossary (German → English)
@@ -174,11 +180,24 @@ The app is shipped as a single-user Windows desktop binary, so there's no auth g
 - `fahrtenplaner/optimizer.py` — `optimize_day()` and the constants (`MIN_TRANSFER_MINUTES = 5`, `TIGHT_TRANSFER_MINUTES = 15` for warnings).
 - `fahrtenplaner/transit_client.py` — Google Maps geocoding (`lookup_station`, `batch_lookup_stations`) and transit routing (`find_connection`, `check_reachability_with_ids`).
 - `fahrtenplaner/myres_client.py` — `MyRESClient` (live) plus `load_tours_from_excel` (fallback). Excel parsing tolerates column-name variations via regex in `_detect_columns`. Non-JSON responses are classified by `_classify_non_json_response` (login-page / WAF-block / empty / malformed).
+- `fahrtenplaner/feedback_client.py` — Builds the JSON payload for in-app
+  feedback, renders the Markdown issue body (with a 60 KB size guard that
+  raises `FeedbackBodyTooLarge` carrying the rendered text for the clipboard
+  fallback), and POSTs to GitHub via `requests`. Pure logic, no Streamlit.
+  Exception hierarchy: `FeedbackError` (base) → `FeedbackNetworkError` /
+  `FeedbackAuthError` / `FeedbackBodyTooLarge`.
 - `fahrtenplaner/models.py` — `Tour`, `Connection`, `Leg`, `ChainLink`, `DayPlan` dataclasses.
 
 **UI (lives in `ui/`, all Streamlit-aware):**
 - `ui/sidebar.py` — entry: `render_sidebar()`. Returns `SidebarContext(selected_date, home_station, dest_station, same_station)`. Owns the MyRES login flow including `_handle_load_tours` which routes failures through `errors.report_error`.
 - `ui/optimization.py` — entry: `render_optimization_section(tours, ctx)`. The main pane: plan-strip → section heading → param inputs → primary button → result → tour browser expander. Includes `_parse_hhmm` (forgiving HH:MM parser).
+- `ui/feedback.py` — entry: `render_feedback_button(plan, ctx, tours, inputs)`.
+  Renders the trigger button under the optimization result; opens a `@st.dialog`
+  with type radio + textarea + preview + send/cancel. On submit, builds the
+  payload via `feedback_client.build_payload`, posts via `submit_to_github`,
+  swaps to a success state on 201 or to an error block + `st.code` clipboard
+  fallback on failure. No-ops when `[github]` secrets are missing or there is
+  no winner chain.
 - `ui/render.py` — entry: `render_result(plan)`. Renders metrics + toggleable map + tour/connection blocks + summary table.
 - `ui/map.py` — entry: `render_route_map(plan)`. PyDeck LineLayer, Carto basemap, Verkehrsrot for tour segments and slate for outbound/inbound.
 - `ui/errors.py` — entry: `report_error(title, details, exc)`. Opens `@st.dialog` with a copyable `st.code()` block — Dad clicks the clipboard icon and forwards.

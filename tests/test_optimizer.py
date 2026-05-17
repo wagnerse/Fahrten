@@ -156,7 +156,7 @@ def run_optimizer(
          patch("optimizer.stations_match", side_effect=mock_stations_match):
 
         from optimizer import optimize_day
-        return optimize_day(
+        plan, _candidates = optimize_day(
             tours=tours,
             home_station=home,
             dest_station=dest,
@@ -164,6 +164,7 @@ def run_optimizer(
             latest_return=datetime.combine(DAY, time(h2, m2)),
             max_transfer_gap_hours=max_gap_hours,
         )
+        return plan
 
 
 # ---------------------------------------------------------------------------
@@ -724,15 +725,21 @@ class TestCarMode:
         tour_a = make_tour(704347, "05:30", "Pasewalk", "08:00", "Pasewalk", 50.0)
         tour_b = make_tour(704348, "10:00", "Pasewalk", "14:00", "Pasewalk", 60.0)
 
-        # Mocks: home & Pasewalk geocode; driving Prenzlau→Pasewalk = 30 min, 32 km;
-        # transfer A→B is feasible at same station.
+        # Transit Prenzlau↔Pasewalk is infeasible (no early train) — that is
+        # what makes the car necessary. The car-mode constraint requires this:
+        # car is a fallback, not a profit center.
+        def reach_side_effect(from_id, to_id, *_args, **_kwargs):
+            if {from_id, to_id} == {"ChIJ_prenzlau", "ChIJ_pasewalk"}:
+                return None
+            return Connection(legs=[])
+
         with patch("optimizer.batch_lookup_stations", return_value={
             "Prenzlau": {"id": "ChIJ_prenzlau", "name": "Prenzlau"},
             "Pasewalk": {"id": "ChIJ_pasewalk", "name": "Pasewalk"},
-        }), patch("optimizer.check_reachability_with_ids", return_value=Connection(legs=[])), \
+        }), patch("optimizer.check_reachability_with_ids", side_effect=reach_side_effect), \
              patch("optimizer.driving_info", return_value=(30, 32.0)):
 
-            plan = optimize_day_car_mode(
+            plan, _candidates = optimize_day_car_mode(
                 tours=[tour_a, tour_b],
                 home_station="Prenzlau",
                 earliest_departure=datetime.combine(DAY, time(4, 0)),
@@ -781,8 +788,8 @@ class TestCarMode:
         )))
 
         # Net: transit = 200, car = 215 - 20 = 195
-        with patch("optimizer.optimize_day", return_value=transit_plan), \
-             patch("optimizer.optimize_day_car_mode", return_value=car_plan):
+        with patch("optimizer.optimize_day", return_value=(transit_plan, [])), \
+             patch("optimizer.optimize_day_car_mode", return_value=(car_plan, [])):
             result = optimize_with_modes(
                 tours=[transit_plan.chain[0].tour, car_plan.chain[1].tour],
                 home_station="Prenzlau", dest_station="Prenzlau",
@@ -802,7 +809,7 @@ class TestCarMode:
         from optimizer import optimize_with_modes
         from models import DayPlan
 
-        with patch("optimizer.optimize_day", return_value=DayPlan()) as transit_mock, \
+        with patch("optimizer.optimize_day", return_value=(DayPlan(), [])) as transit_mock, \
              patch("optimizer.optimize_day_car_mode") as car_mock:
             optimize_with_modes(
                 tours=[],
@@ -829,13 +836,21 @@ class TestCarMode:
         return_conn = make_leg_conn("Stralsund Hbf", "2026-04-01T10:30:00",
                                      "Pasewalk",      "2026-04-01T11:30:00")
 
+        # Car-mode fallback rule: transit Prenzlau↔Pasewalk and Stralsund→Prenzlau
+        # are infeasible, so the car is *required* for both legs. Only the
+        # Relaxation-B transit return Stralsund→Pasewalk works.
+        def reach_side_effect(from_id, to_id, *_args, **_kwargs):
+            if (from_id, to_id) == ("ChIJ_stralsund", "ChIJ_pasewalk"):
+                return return_conn
+            return None  # all other pairs (incl. Prenzlau↔Pasewalk, Stralsund→Prenzlau)
+
         with patch("optimizer.batch_lookup_stations", return_value={
             "Prenzlau":     {"id": "ChIJ_prenzlau", "name": "Prenzlau"},
             "Pasewalk":     {"id": "ChIJ_pasewalk", "name": "Pasewalk"},
             "Stralsund Hbf":{"id": "ChIJ_stralsund","name": "Stralsund Hbf"},
         }), patch("optimizer.driving_info", return_value=(30, 32.0)), \
-             patch("optimizer.check_reachability_with_ids", return_value=return_conn):
-            plan = optimize_day_car_mode(
+             patch("optimizer.check_reachability_with_ids", side_effect=reach_side_effect):
+            plan, _candidates = optimize_day_car_mode(
                 tours=[tour],
                 home_station="Prenzlau",
                 earliest_departure=datetime.combine(DAY, time(4, 0)),
@@ -851,3 +866,264 @@ class TestCarMode:
         assert types == ["car_outbound", "tour", "inbound", "car_inbound"]
         assert plan.chain[2].connection is not None  # the free transit return leg
         assert plan.chain[2].connection.legs[0].arrival_station == "Pasewalk"
+
+    def test_car_mode_rejected_when_transit_reaches_tour(self):
+        """Car is a fallback: if a train can reach the tour from home in time,
+        the car is not allowed (prevents Kilometerpauschale from gaming the result)."""
+        from optimizer import optimize_day_car_mode
+
+        # Same setup as the Pasewalk roundtrip test, but transit Prenzlau↔Pasewalk
+        # IS feasible — so car-mode must produce no chain.
+        tour_a = make_tour(704347, "05:30", "Pasewalk", "08:00", "Pasewalk", 50.0)
+        tour_b = make_tour(704348, "10:00", "Pasewalk", "14:00", "Pasewalk", 60.0)
+
+        with patch("optimizer.batch_lookup_stations", return_value={
+            "Prenzlau": {"id": "ChIJ_prenzlau", "name": "Prenzlau"},
+            "Pasewalk": {"id": "ChIJ_pasewalk", "name": "Pasewalk"},
+        }), patch("optimizer.check_reachability_with_ids", return_value=Connection(legs=[])), \
+             patch("optimizer.driving_info", return_value=(30, 32.0)):
+            plan, _candidates = optimize_day_car_mode(
+                tours=[tour_a, tour_b],
+                home_station="Prenzlau",
+                earliest_departure=datetime.combine(DAY, time(4, 0)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=60,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+                fuel_refund_per_km=0.20,  # would normally make car attractive
+            )
+
+        # Transit reaches the tour → no car chain is built, even with a
+        # juicy 20 ct/km Kilometerpauschale that would otherwise win.
+        assert plan.num_tours == 0
+
+
+# ---------------------------------------------------------------------------
+# DayPlan metrics (overhead_duration, euros_per_hour)
+# ---------------------------------------------------------------------------
+
+class TestDayPlanMetrics:
+    """Cover the new DayPlan properties used by effort-ranked alternatives."""
+
+    def test_overhead_duration_sums_only_connections(self):
+        """Tour duration is paid time — only connections + car legs count as overhead."""
+        from models import ChainLink, Connection, Leg
+
+        # outbound: 1h, transfer: 30min, inbound: 45min  → 2h15 overhead
+        outbound = Connection(legs=[Leg(
+            departure_station="A", departure_time=datetime(2026, 6, 1, 5, 0),
+            arrival_station="B",   arrival_time=  datetime(2026, 6, 1, 6, 0),
+            line="RE1",
+        )])
+        transfer = Connection(legs=[Leg(
+            departure_station="B", departure_time=datetime(2026, 6, 1, 8, 0),
+            arrival_station="C",   arrival_time=  datetime(2026, 6, 1, 8, 30),
+            line="RE2",
+        )])
+        inbound = Connection(legs=[Leg(
+            departure_station="D", departure_time=datetime(2026, 6, 1, 12, 0),
+            arrival_station="A",   arrival_time=  datetime(2026, 6, 1, 12, 45),
+            line="RE3",
+        )])
+        tour_a = make_tour(1, "06:00", "B", "08:00", "B", 30.0)
+        tour_b = make_tour(2, "08:30", "C", "12:00", "D", 50.0)
+
+        plan = DayPlan()
+        plan.chain.extend([
+            ChainLink(type="outbound", connection=outbound),
+            ChainLink(type="tour", tour=tour_a),
+            ChainLink(type="transfer", connection=transfer),
+            ChainLink(type="tour", tour=tour_b),
+            ChainLink(type="inbound", connection=inbound),
+        ])
+        assert plan.overhead_duration == timedelta(hours=2, minutes=15)
+
+    def test_overhead_duration_includes_car_legs(self):
+        """car_outbound + car_inbound minutes are part of overhead."""
+        from models import CarLeg, ChainLink
+
+        car_out = CarLeg(from_station="Home", to_station="Park",
+                         minutes=30, km=32.0, cost=5.0)
+        car_in  = CarLeg(from_station="Park", to_station="Home",
+                         minutes=35, km=32.0, cost=5.0)  # slightly longer return
+        tour = make_tour(1, "06:00", "Park", "08:00", "Park", 50.0)
+
+        plan = DayPlan()
+        plan.chain.extend([
+            ChainLink(type="car_outbound", car_leg=car_out),
+            ChainLink(type="tour", tour=tour),
+            ChainLink(type="car_inbound", car_leg=car_in),
+        ])
+        # 30 + 35 = 65 min; tour duration excluded
+        assert plan.overhead_duration == timedelta(minutes=65)
+
+    def test_euros_per_hour_division(self):
+        """net_euros / overhead_hours; verify a known value."""
+        from models import ChainLink, Connection, Leg
+
+        # 4h13 overhead (253 minutes), 42.12 € net → ≈ 9.99 €/h
+        outbound = Connection(legs=[Leg(
+            departure_station="A", departure_time=datetime(2026, 6, 1, 5, 0),
+            arrival_station="B",   arrival_time=  datetime(2026, 6, 1, 7, 0),
+            line="RE1",
+        )])  # 2h
+        inbound = Connection(legs=[Leg(
+            departure_station="C", departure_time=datetime(2026, 6, 1, 11, 0),
+            arrival_station="A",   arrival_time=  datetime(2026, 6, 1, 13, 13),
+            line="RE2",
+        )])  # 2h13
+        tour = make_tour(1, "07:00", "B", "11:00", "C", 42.12)
+
+        plan = DayPlan()
+        plan.chain.extend([
+            ChainLink(type="outbound", connection=outbound),
+            ChainLink(type="tour", tour=tour),
+            ChainLink(type="inbound", connection=inbound),
+        ])
+        # 42.12 / (253/60) = 42.12 / 4.2167 ≈ 9.9876
+        assert plan.euros_per_hour == pytest.approx(9.99, abs=0.01)
+
+    def test_euros_per_hour_zero_when_no_overhead(self):
+        """Degenerate plan with no connections and no car legs returns 0.0."""
+        from models import ChainLink
+
+        tour = make_tour(1, "06:00", "A", "08:00", "A", 10.0)
+        plan = DayPlan()
+        plan.chain.append(ChainLink(type="tour", tour=tour))
+        assert plan.euros_per_hour == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Effort-ranked alternatives — _build_efficiency_options
+# ---------------------------------------------------------------------------
+
+def _single_tour_plan(
+    tour_nr: int, dep_station: str, dep_time: str, arr_station: str,
+    arr_time: str, euros: float,
+    outbound_min: int = 60, inbound_min: int = 60,
+) -> DayPlan:
+    """Build a single-tour DayPlan with synthesised outbound + inbound for tests.
+
+    `outbound_min` and `inbound_min` set the connection durations so the test
+    can control the resulting overhead_duration.
+    """
+    from models import ChainLink, Connection, Leg
+
+    tour = make_tour(tour_nr, dep_time, dep_station, arr_time, arr_station, euros)
+    out_dep = tour.departure_dt - timedelta(minutes=outbound_min)
+    in_arr  = tour.arrival_dt + timedelta(minutes=inbound_min)
+
+    outbound = Connection(legs=[Leg(
+        departure_station="HOME", departure_time=out_dep,
+        arrival_station=dep_station, arrival_time=tour.departure_dt,
+        line="RE1",
+    )])
+    inbound = Connection(legs=[Leg(
+        departure_station=arr_station, departure_time=tour.arrival_dt,
+        arrival_station="HOME", arrival_time=in_arr,
+        line="RE2",
+    )])
+    plan = DayPlan()
+    plan.chain.extend([
+        ChainLink(type="outbound", connection=outbound),
+        ChainLink(type="tour", tour=tour),
+        ChainLink(type="inbound", connection=inbound),
+    ])
+    return plan
+
+
+class TestEfficiencyOptions:
+    """_build_efficiency_options: filter → dedupe → exclude → sort → truncate."""
+
+    def test_returns_top_5_sorted_ascending_by_overhead(self):
+        from optimizer import _build_efficiency_options
+
+        # 7 candidates with increasing overhead. Top 5 expected, in order.
+        candidates = [
+            _single_tour_plan(100 + i, "A", "08:00", "B", "09:00",
+                              euros=30.0,
+                              outbound_min=10 + i * 10, inbound_min=10)
+            for i in range(7)
+        ]
+        result = _build_efficiency_options(candidates, excluded=[])
+        assert len(result) == 5
+        overheads = [p.overhead_duration for p in result]
+        assert overheads == sorted(overheads)
+
+    def test_excludes_winner_and_alternative(self):
+        from optimizer import _build_efficiency_options
+
+        winner = _single_tour_plan(200, "A", "08:00", "B", "09:00",
+                                    euros=40.0, outbound_min=30, inbound_min=30)
+        alt    = _single_tour_plan(201, "A", "10:00", "B", "11:00",
+                                    euros=35.0, outbound_min=40, inbound_min=40)
+        other  = _single_tour_plan(202, "A", "12:00", "B", "13:00",
+                                    euros=30.0, outbound_min=20, inbound_min=20)
+
+        result = _build_efficiency_options(
+            [winner, alt, other], excluded=[winner, alt],
+        )
+        tour_nrs = [p.tours[0].tour_nr for p in result]
+        assert tour_nrs == [202]
+
+    def test_deduplicates_identical_tour_sequences(self):
+        from optimizer import _build_efficiency_options
+
+        # Same tour number, same has_car_legs flag → collapsed.
+        a = _single_tour_plan(300, "A", "08:00", "B", "09:00",
+                              euros=30.0, outbound_min=30, inbound_min=30)
+        b = _single_tour_plan(300, "A", "08:00", "B", "09:00",
+                              euros=30.0, outbound_min=45, inbound_min=45)  # different overhead
+        result = _build_efficiency_options([a, b], excluded=[])
+        assert len(result) == 1
+        # First-seen wins (the 60-min total overhead one)
+        assert result[0].overhead_duration == timedelta(minutes=60)
+
+    def test_drops_plans_below_min_net_euros(self):
+        from optimizer import _build_efficiency_options, EFFICIENCY_MIN_NET_EUROS
+
+        assert EFFICIENCY_MIN_NET_EUROS == 10.0  # guard against silent re-tuning
+
+        tiny = _single_tour_plan(400, "A", "08:00", "B", "09:00",
+                                 euros=5.0, outbound_min=5, inbound_min=5)
+        big  = _single_tour_plan(401, "A", "10:00", "B", "11:00",
+                                 euros=40.0, outbound_min=60, inbound_min=60)
+        result = _build_efficiency_options([tiny, big], excluded=[])
+        tour_nrs = [p.tours[0].tour_nr for p in result]
+        assert tour_nrs == [401]
+
+    def test_empty_list_when_no_candidates(self):
+        from optimizer import _build_efficiency_options
+        assert _build_efficiency_options([], excluded=[]) == []
+
+    def test_optimize_with_modes_populates_efficiency_options(self):
+        """End-to-end: optimize_with_modes returns alternatives in efficiency_options."""
+        from optimizer import optimize_with_modes
+
+        # Three single-tour candidates from transit mode; winner is the highest
+        # net_euros, the other two should appear in efficiency_options sorted
+        # by overhead ascending.
+        winner_plan = _single_tour_plan(500, "A", "08:00", "B", "09:00",
+                                         euros=50.0, outbound_min=120, inbound_min=120)
+        cheap_plan  = _single_tour_plan(501, "A", "10:00", "B", "11:00",
+                                         euros=40.0, outbound_min=20, inbound_min=20)
+        mid_plan    = _single_tour_plan(502, "A", "12:00", "B", "13:00",
+                                         euros=30.0, outbound_min=60, inbound_min=60)
+
+        with patch("optimizer.optimize_day",
+                   return_value=(winner_plan, [winner_plan, cheap_plan, mid_plan])), \
+             patch("optimizer.stations_match", return_value=False):
+            result = optimize_with_modes(
+                tours=[],
+                home_station="Prenzlau", dest_station="Stralsund",  # ≠ → no car mode
+                earliest_departure=datetime.combine(DAY, time(4, 0)),
+                latest_return=datetime.combine(DAY, time(23, 59)),
+                max_car_minutes=0,
+                fuel_consumption=7.0,
+                fuel_price=1.79,
+            )
+
+        assert result.winner.tours[0].tour_nr == 500
+        # cheap_plan has 40 min overhead, mid_plan has 120 min — cheap first
+        nrs = [p.tours[0].tour_nr for p in result.efficiency_options]
+        assert nrs == [501, 502]

@@ -16,11 +16,44 @@ Der Browser oeffnet sich automatisch unter `http://localhost:8501`.
 
 ## Entwicklung (macOS/Linux)
 
+Drei Wege, die App lokal zu starten — je nach gewünschter Nähe zur
+Windows-Auslieferung:
+
+**1. Browser + Live-Reload** (schnellster Iterations-Loop):
+
 ```bash
-uv run streamlit run fahrtenplaner/app.py
+./dev.sh
 ```
 
-Automatischer Reload bei Dateiänderungen ist über `.streamlit/config.toml` vorkonfiguriert.
+Bindet `localhost`, aktiviert `runOnSave`, öffnet `http://localhost:8501` im
+Standard-Browser. Speichern einer Datei unter `fahrtenplaner/**/*.py` löst
+automatisch einen Rerun aus; `st.session_state` bleibt erhalten.
+
+**2. Fenster-Modus + Live-Reload** (entspricht Dads Erlebnis + Hot-Reload):
+
+```bash
+uv run python launcher.py --dev
+```
+
+Startet die App im selben chromelosen `pywebview`-Fenster wie die ausgelieferte
+Windows-`.exe` — aber mit Auto-Reload, sichtbarem Titel-Suffix *„— Dev"* und
+Rechtsklick → *Inspect* via Devtools. Der Update-Check wird in diesem Modus
+übersprungen.
+
+**3. Fenster-Modus ohne Reload** (reine Produktionsvorschau):
+
+```bash
+uv run python launcher.py
+```
+
+Genau das, was die `.exe` macht — inklusive Update-Check gegen GitHub
+Releases. Nützlich, um vor einem Release die finale Optik zu prüfen.
+
+Tests laufen mocked (keine Live-API-Calls):
+
+```bash
+uv run --with pytest pytest tests/
+```
 
 ## Probleme?
 

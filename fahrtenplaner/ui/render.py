@@ -444,6 +444,7 @@ def _render_details(
     kind: str,
     fuel_consumption: float,
     fuel_price: float,
+    fuel_refund_per_km: float,
 ) -> None:
     for warning in plan.warnings:
         st.warning(warning)
@@ -452,9 +453,13 @@ def _render_details(
         total_km = sum(link.car_leg.km for link in plan.chain if link.car_leg is not None)
         cons_str = f"{fuel_consumption:.1f}".replace(".", ",")
         price_str = f"{fuel_price:.2f}".replace(".", ",")
+        refund_ct_str = f"{fuel_refund_per_km * 100:.0f}".replace(".", ",")
+        refund_suffix = (
+            f" − {refund_ct_str} ct/km Pauschale" if fuel_refund_per_km > 0 else ""
+        )
         st.caption(
-            f"Sprit: {total_km:.0f} km · {cons_str} l/100km · {price_str} €/l "
-            f"= {_fmt_eur(plan.total_costs)}"
+            f"Sprit: {total_km:.0f} km · {cons_str} l/100km · {price_str} €/l"
+            f"{refund_suffix} = {_fmt_eur(plan.total_costs)}"
         )
 
     if st.toggle(
@@ -489,6 +494,7 @@ def _render_plan_section(
     kind: str,
     fuel_consumption: float,
     fuel_price: float,
+    fuel_refund_per_km: float,
     latest_return_target: Optional[datetime],
 ) -> None:
     """One bahn-row + a Bahn.de-style 'Details ▾' link that reveals the chain."""
@@ -520,7 +526,97 @@ def _render_plan_section(
 
     if expanded:
         st.markdown('<div class="bahn-details-anchor"></div>', unsafe_allow_html=True)
-        _render_details(plan, kind, fuel_consumption, fuel_price)
+        _render_details(plan, kind, fuel_consumption, fuel_price, fuel_refund_per_km)
+
+
+# --------------------------------------------------------------------------- #
+# Effort-ranked alternatives — compact list rendered under winner/alternative
+# --------------------------------------------------------------------------- #
+
+def _fmt_overhead(td: timedelta) -> str:
+    """4h13 / 45 min — shorter than _fmt_duration for the compact row."""
+    total_min = max(0, int(td.total_seconds() / 60))
+    h, m = divmod(total_min, 60)
+    if h == 0:
+        return f"{m} min"
+    return f"{h}h{m:02d}"
+
+
+def _short_route_label(plan: DayPlan) -> str:
+    """First tour number + 'Station → Station' across the whole chain."""
+    if not plan.tours:
+        return "—"
+    first = plan.tours[0]
+    last = plan.tours[-1]
+    nrs = " · ".join(str(t.tour_nr) for t in plan.tours)
+    return f"{nrs} — {first.departure_station} → {last.arrival_station}"
+
+
+def _render_efficiency_row(
+    plan: DayPlan,
+    idx: int,
+    fuel_consumption: float,
+    fuel_price: float,
+    fuel_refund_per_km: float,
+    latest_return_target: Optional[datetime],
+) -> None:
+    """One compact row + Details disclosure reusing _render_details."""
+    overhead_str = _fmt_overhead(plan.overhead_duration)
+    eur_per_h_str = (
+        f"{plan.euros_per_hour:.1f}".replace(".", ",") + " €/h"
+        if plan.overhead_duration.total_seconds() > 0 else "—"
+    )
+    net_str = _fmt_eur(plan.net_euros)
+    label = _short_route_label(plan)
+
+    _html(f"""
+        <article class="eff-row">
+          <div class="eff-row__lead">
+            <span class="eff-row__overhead">⏱ {overhead_str}</span>
+            <span class="eff-row__label">{label}</span>
+          </div>
+          <div class="eff-row__meta">
+            <span class="eff-row__net">{net_str}</span>
+            <span class="eff-row__sep">·</span>
+            <span class="eff-row__rate">{eur_per_h_str}</span>
+          </div>
+        </article>
+        """)
+
+    kind = f"eff_{idx}"
+    expanded_key = f"bahn_details_expanded_{kind}"
+    expanded = st.session_state.get(expanded_key, False)
+    chevron = "▴" if expanded else "▾"
+    if st.button(
+        f"Details {chevron}",
+        key=f"bahn_details_btn_{kind}",
+        use_container_width=True,
+    ):
+        st.session_state[expanded_key] = not expanded
+        st.rerun()
+    if expanded:
+        _render_details(plan, kind, fuel_consumption, fuel_price, fuel_refund_per_km)
+
+
+def _render_efficiency_options(
+    options: list[DayPlan],
+    fuel_consumption: float,
+    fuel_price: float,
+    fuel_refund_per_km: float,
+    latest_return_target: Optional[datetime],
+) -> None:
+    if not options:
+        return
+    _eyebrow(
+        "Weitere Optionen — nach Aufwand sortiert",
+        f'<span class="result-eyebrow__count">{len(options)} Optionen</span>',
+    )
+    for idx, plan in enumerate(options):
+        _render_efficiency_row(
+            plan, idx,
+            fuel_consumption, fuel_price, fuel_refund_per_km,
+            latest_return_target,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -528,17 +624,25 @@ def _render_plan_section(
 # --------------------------------------------------------------------------- #
 
 def render_result(result: OptimizationResult) -> None:
-    """Render winner row + (optional) alternative row, both bahn-style."""
+    """Render winner row + (optional) alternative row + effort-ranked options."""
     fuel_consumption = float(st.session_state.get("fuel_consumption", 7.0))
-    fuel_price = float(st.session_state.get("fuel_price", 1.79))
+    fuel_price = float(st.session_state.get("fuel_price", 2.00))
+    fuel_refund_per_km = float(st.session_state.get("fuel_refund_per_km", 0.20))
     latest_return_target = result.latest_return_target
 
     _render_plan_section(
-        result.winner, "winner", fuel_consumption, fuel_price, latest_return_target,
+        result.winner, "winner",
+        fuel_consumption, fuel_price, fuel_refund_per_km, latest_return_target,
     )
 
     if result.has_alternative:
         _render_plan_section(
             result.alternative, "alternative",
-            fuel_consumption, fuel_price, latest_return_target,
+            fuel_consumption, fuel_price, fuel_refund_per_km, latest_return_target,
         )
+
+    _render_efficiency_options(
+        result.efficiency_options,
+        fuel_consumption, fuel_price, fuel_refund_per_km,
+        latest_return_target,
+    )

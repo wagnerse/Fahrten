@@ -1493,3 +1493,55 @@ code, pre, kbd {
     margin-left: 0.25rem;
 }
 
+/* =========================================================================
+ * Effort-ranked alternatives — compact rows under the winner/alternative
+ * ========================================================================= */
+
+.eff-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  margin-top: 0.5rem;
+}
+
+.eff-row__lead {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.eff-row__overhead {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.eff-row__label {
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eff-row__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.eff-row__net {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.eff-row__sep { opacity: 0.4; }
+

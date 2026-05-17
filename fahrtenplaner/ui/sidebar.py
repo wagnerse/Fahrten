@@ -141,6 +141,7 @@ def _render_data_source_panel() -> tuple[str, str, list[str], date]:
             default=["Brandenburg", "Mecklenburg-Vorpommern"],
             help="Welche Länder soll MyRES nach freien Touren absuchen?",
         )
+        st.session_state["myres_states"] = states
 
         selected_date = st.date_input(
             "Datum",
@@ -249,6 +250,7 @@ def _render_auto_panel(same_station: bool) -> int:
 
         cons = float(st.session_state.fuel_consumption)
         price = float(st.session_state.fuel_price)
+        refund = float(st.session_state.fuel_refund_per_km)
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -266,7 +268,18 @@ def _render_auto_panel(same_station: bool) -> int:
                 help="Aktueller Preis an der Tankstelle.",
             )
 
-        per_km_cents = (cons * price)  # ct/km == l/100 × €/l × 100 ÷ 100
+        st.session_state.fuel_refund_per_km = st.number_input(
+            "Kilometerpauschale (€/km)",
+            min_value=0.0, max_value=2.0, step=0.01,
+            value=refund,
+            help=(
+                "Erstattung pro gefahrenem Kilometer (z. B. DB-Spritkosten-"
+                "Erstattung). Wird von den Spritkosten abgezogen."
+            ),
+        )
+
+        # ct/km: gross fuel (l/100 × €/l × 100 ÷ 100) minus refund (€/km × 100).
+        per_km_cents = (cons * price) - refund * 100.0
         # Rough envelope: assume avg 70 km/h on rural Anfahrt, one-way × 2.
         approx_km_round_trip = (max_minutes / 60.0) * 70.0 * 2
         approx_cost_round_trip = approx_km_round_trip * per_km_cents / 100.0
