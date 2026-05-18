@@ -15,10 +15,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
-import pandas as pd
 import streamlit as st
 
-from models import ChainLink, DayPlan, OptimizationResult
+from models import DayPlan, OptimizationResult
 from .map import render_route_map
 
 
@@ -186,98 +185,6 @@ def _chain_segments(plan: DayPlan) -> list[_Segment]:
     return segs
 
 
-# --------------------------------------------------------------------------- #
-# Detail blocks (preserved from previous design — used inside Details disclosure)
-# --------------------------------------------------------------------------- #
-
-def _render_tour_block(link: ChainLink) -> None:
-    tour = link.tour
-    if not tour:
-        return
-    day_class = {"Mi": "day-mi", "Do": "day-do", "Fr": "day-fr"}.get(tour.day_name, "")
-    price = f"{tour.euros:.2f}".replace(".", ",")
-    st.markdown(
-        f"""
-        <div class="tour-card {day_class}">
-          <div class="head">
-            <span class="nr">Tour № {tour.tour_nr} · {tour.day_name}</span>
-            <span class="price">{price}&nbsp;€</span>
-          </div>
-          <div class="route">
-            <span class="time">{tour.departure_time:%H:%M}</span>
-            <span class="station">&nbsp;{tour.departure_station}</span>
-            <span class="arrow">→</span>
-            <span class="time">{tour.arrival_time:%H:%M}</span>
-            <span class="station">&nbsp;{tour.arrival_station}</span>
-          </div>
-          <div class="meta">{tour.num_rides} Fahrt(en) · {tour.duration_str} h · {tour.points} Pkt</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _render_connection_block(title: str, link: ChainLink) -> None:
-    conn = link.connection
-    if not conn or not conn.legs:
-        return
-    warning_html = ""
-    if link.warning:
-        if "Schienenersatzverkehr" in link.warning:
-            warning_html = f'<div class="sev-box">⚠️ {link.warning}</div>'
-        else:
-            warning_html = f'<div class="warning-box">⚠️ {link.warning}</div>'
-    legs_html = ""
-    for leg in conn.legs:
-        sev_marker = " 🚌 SEV" if leg.is_replacement_service else ""
-        legs_html += (
-            f"<div class='leg-line'>"
-            f"<code>{leg.departure_time:%H:%M}</code> {leg.departure_station} "
-            f"→ <code>{leg.arrival_time:%H:%M}</code> {leg.arrival_station} "
-            f"<small>({leg.line}{sev_marker})</small>"
-            f"</div>"
-        )
-    with st.expander(f"{title}  ·  {conn.duration_str} · {conn.transfers} Umstieg(e)"):
-        st.markdown(f"{warning_html}{legs_html}", unsafe_allow_html=True)
-
-
-def _render_car_leg_block(link: ChainLink) -> None:
-    leg = link.car_leg
-    if not leg:
-        return
-    cost_str = f"{leg.cost:.2f} €".replace(".", ",")
-    st.markdown(
-        f"""
-        <div class="auto-leg">
-          <span class="icon">🚗</span>
-          <span class="label">{link.label}</span>
-          <span class="meta">{leg.minutes} min · {leg.km:.0f} km · {cost_str} Sprit</span>
-          <span class="dest">→ {leg.to_station}</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _render_summary_table(plan: DayPlan) -> None:
-    rows = []
-    for link in plan.chain:
-        if link.type == "tour" and link.tour:
-            t = link.tour
-            rows.append({
-                "Tour-Nr": t.tour_nr,
-                "Ab": t.departure_time.strftime("%H:%M"),
-                "Start": t.departure_station,
-                "An": t.arrival_time.strftime("%H:%M"),
-                "Ziel": t.arrival_station,
-                "Fahrten": t.num_rides,
-                "Euro": f"{t.euros:.2f} €".replace(".", ","),
-            })
-    if not rows:
-        return
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-
 def _eyebrow(label: str, count_html: str = "") -> None:
     st.markdown(
         f"""
@@ -375,6 +282,7 @@ def _render_bahn_row(
     plan: DayPlan,
     kind: str,                         # "winner" | "alternative"
     latest_return_target: Optional[datetime],
+    include_legs: bool = False,
 ) -> None:
     start_dt = _chain_start_dt(plan)
     end_dt = _chain_end_dt(plan)
@@ -397,6 +305,8 @@ def _render_bahn_row(
     overshoot_html = _bahn_overshoot_html(end_dt, latest_return_target)
     tours_chip = f'<span class="bahn-row__tours">{plan.num_tours} Touren</span>'
     sev_chip = _bahn_sev_chip(plan)
+
+    legs_html = _build_legs_html(plan) if include_legs else ""
 
     _html(f"""
         <article class="bahn-row bahn-row--{kind}">
@@ -432,11 +342,188 @@ def _render_bahn_row(
             {sub_html}
           </aside>
         </article>
+        {legs_html}
         """)
 
 
+def _build_legs_html(plan: DayPlan) -> str:
+    """Compact itinerary attached visually below the bahn-row card.
+
+    Uses inline styles instead of CSS classes — Streamlit's markdown
+    pipeline strips/wraps elements unpredictably, which breaks class-based
+    sibling rules; inline styles are unaffected by that.
+    """
+    segs = _segments_from_chain(plan)
+    if not segs:
+        return ""
+    # Color tokens chosen to match the existing bahn-row visuals.
+    badge_styles = {
+        "rail": "background:#1F2937;color:#fff;",
+        "tour": "background:#E30613;color:#fff;",
+        "car":  "background:#C8993A;color:#1A1A1A;",
+        "walk": "background:#F4F4F2;color:#2C2C2A;border:1px solid #E3E3E0;",
+    }
+    row_bg = {
+        "tour": "#FFF7F7", "car": "#FFFDF6", "walk": "#FAFAF8", "rail": "#FFFFFF",
+    }
+    rows: list[str] = []
+    for i, s in enumerate(segs):
+        dur = _fmt_minutes(
+            int((s["arr_time"] - s["dep_time"]).total_seconds() / 60)
+        )
+        meta = (
+            f'<span style="color:#666;font-size:0.82rem;font-variant-numeric:tabular-nums;'
+            f'text-align:right;white-space:nowrap;">{s["meta"]}</span>'
+        ) if s["meta"] else '<span></span>'
+        bg = row_bg.get(s["kind"], "#FFF")
+        border_top = "0" if i == 0 else "1px solid #EEEEEC"
+        badge_style = badge_styles.get(s["kind"], "background:#1F2937;color:#fff;")
+        route_weight = "600" if s["kind"] == "tour" else "500"
+        rows.append(
+            f'<div style="display:grid;'
+            f'grid-template-columns:7.2rem 3.4rem auto 1fr auto;'
+            f'align-items:baseline;column-gap:0.9rem;'
+            f'padding:0.55rem 1rem;background:{bg};'
+            f'border-top:{border_top};font-size:0.88rem;">'
+            f'<span style="font-family:ui-monospace,Menlo,monospace;'
+            f'font-variant-numeric:tabular-nums;font-weight:600;color:#1A1A1A;white-space:nowrap;">'
+            f'{s["dep_time"]:%H:%M} → {s["arr_time"]:%H:%M}</span>'
+            f'<span style="color:#666;font-size:0.78rem;font-variant-numeric:tabular-nums;">{dur}</span>'
+            f'<span style="display:inline-block;min-width:6.5rem;text-align:center;'
+            f'padding:0.18rem 0.6rem;border-radius:4px;font-size:0.72rem;'
+            f'font-weight:600;letter-spacing:0.04em;white-space:nowrap;'
+            f'{badge_style}align-self:center;">{s["badge"]}</span>'
+            f'<span style="color:#1A1A1A;font-weight:{route_weight};overflow:hidden;'
+            f'text-overflow:ellipsis;white-space:nowrap;">'
+            f'{s["dep_station"]} → {s["arr_station"]}</span>'
+            f'{meta}'
+            f'</div>'
+        )
+    container_style = (
+        "margin-top:-1px;border:1px solid #E3E3E0;border-top:0;"
+        "border-radius:0 0 12px 12px;background:#FFFFFF;overflow:hidden;"
+    )
+    return f'<div style="{container_style}">{"".join(rows)}</div>'
+
+
 # --------------------------------------------------------------------------- #
-# Details disclosure (warnings + map + chain blocks + summary)
+# Unified plan table — one row per leg (car, train, walk, tour)
+# --------------------------------------------------------------------------- #
+
+def _link_anchor_dt(link) -> Optional[datetime]:
+    """Time anchor for a non-car link — the moment it 'starts' or 'ends'
+    depending on caller intent. Returns None for car_outbound/car_inbound
+    so they can't anchor each other."""
+    if link.connection and link.connection.departure_time:
+        return link.connection.departure_time
+    if link.tour:
+        return link.tour.departure_dt
+    return None
+
+
+def _link_end_dt(link) -> Optional[datetime]:
+    if link.connection and link.connection.arrival_time:
+        return link.connection.arrival_time
+    if link.tour:
+        return link.tour.arrival_dt
+    return None
+
+
+def _car_leg_times(plan: DayPlan, idx: int) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Compute (departure, arrival) for a car_outbound/car_inbound link.
+    Anchored against the neighbouring non-car link's time."""
+    link = plan.chain[idx]
+    if not link.car_leg:
+        return None, None
+    drive = timedelta(minutes=link.car_leg.minutes)
+    if link.type == "car_outbound":
+        anchor = next(
+            (dt for nxt in plan.chain[idx + 1:] if (dt := _link_anchor_dt(nxt))),
+            None,
+        )
+        return (anchor - drive, anchor) if anchor else (None, None)
+    # car_inbound
+    anchor = next(
+        (dt for prev in reversed(plan.chain[:idx]) if (dt := _link_end_dt(prev))),
+        None,
+    )
+    return (anchor, anchor + drive) if anchor else (None, None)
+
+
+def _fmt_hhmm(dt: Optional[datetime]) -> str:
+    return f"{dt:%H:%M}" if dt is not None else "—"
+
+
+def _fmt_minutes(minutes: int) -> str:
+    if minutes < 60:
+        return f"{minutes} min"
+    h, m = divmod(minutes, 60)
+    return f"{h}h{m:02d}"
+
+
+def _segment_for_car(plan: DayPlan, idx: int) -> Optional[dict]:
+    dep, arr = _car_leg_times(plan, idx)
+    if dep is None or arr is None:
+        return None
+    cl = plan.chain[idx].car_leg
+    meta_parts = [f"{cl.km:.0f} km"]
+    if cl.cost != 0:
+        meta_parts.append(f"{_fmt_eur(cl.cost)} Sprit")
+    return {
+        "kind": "car",
+        "badge": "🚗  AUTO",
+        "dep_time": dep, "dep_station": cl.from_station,
+        "arr_time": arr, "arr_station": cl.to_station,
+        "meta": " · ".join(meta_parts),
+    }
+
+
+def _segment_for_tour(link) -> dict:
+    t = link.tour
+    return {
+        "kind": "tour",
+        "badge": f"🎫  {t.tour_nr}",
+        "dep_time": t.departure_dt, "dep_station": t.departure_station,
+        "arr_time": t.arrival_dt, "arr_station": t.arrival_station,
+        "meta": f"{_fmt_eur(t.euros, sign='+')} · {t.num_rides} Fahrt(en)",
+    }
+
+
+def _segment_for_leg(leg) -> dict:
+    is_walk = leg.line == "🚶 Fußweg"
+    sev = " · 🚌 SEV" if leg.is_replacement_service else ""
+    badge = f"🚶  FUSSWEG{sev}" if is_walk else f"🚆  {leg.line}{sev}"
+    return {
+        "kind": "walk" if is_walk else "rail",
+        "badge": badge,
+        "dep_time": leg.departure_time,
+        "dep_station": leg.departure_station or "—",
+        "arr_time": leg.arrival_time,
+        "arr_station": leg.arrival_station or "—",
+        "meta": "",
+    }
+
+
+def _segments_from_chain(plan: DayPlan) -> list[dict]:
+    """Flatten the chain to segments: one per car_leg, one per tour, one per
+    transit Leg inside a Connection."""
+    segs: list[dict] = []
+    for idx, link in enumerate(plan.chain):
+        if link.car_leg:
+            seg = _segment_for_car(plan, idx)
+            if seg is not None:
+                segs.append(seg)
+        elif link.tour:
+            segs.append(_segment_for_tour(link))
+        elif link.connection and link.connection.legs:
+            segs.extend(_segment_for_leg(leg) for leg in link.connection.legs)
+    return segs
+
+
+# --------------------------------------------------------------------------- #
+# Details disclosure — secondary info (warnings, sprit caption, map toggle).
+# The leg-by-leg itinerary itself is embedded directly in the bahn-row card
+# (see _build_legs_html above), so it's always visible without a click.
 # --------------------------------------------------------------------------- #
 
 def _render_details(
@@ -470,23 +557,12 @@ def _render_details(
     ):
         render_route_map(plan)
 
-    chain_count = sum(1 for link in plan.chain if link.type == "tour")
-    _eyebrow("Tagesplan", f'<span class="result-eyebrow__count">{chain_count} Touren</span>')
-    for link in plan.chain:
-        if link.type == "outbound":
-            _render_connection_block("🚉 Anreise", link)
-        elif link.type == "inbound":
-            title = "🚆 Rückfahrt zum Auto" if plan.has_car_legs else "🏠 Rückreise"
-            _render_connection_block(title, link)
-        elif link.type == "transfer":
-            _render_connection_block("🔄 Transfer", link)
-        elif link.type == "tour":
-            _render_tour_block(link)
-        elif link.type in ("car_outbound", "car_inbound"):
-            _render_car_leg_block(link)
-
-    _eyebrow("Zusammenfassung")
-    _render_summary_table(plan)
+    # Efficiency-option details: also embed the leg-by-leg itinerary here,
+    # because the bahn-row above is the compact .eff-row (no embedded legs).
+    # Winner/alternative already have legs attached to their bahn-row card.
+    if kind.startswith("eff_"):
+        _eyebrow("Tagesplan")
+        st.markdown(_build_legs_html(plan), unsafe_allow_html=True)
 
 
 def _render_plan_section(
@@ -497,15 +573,14 @@ def _render_plan_section(
     fuel_refund_per_km: float,
     latest_return_target: Optional[datetime],
 ) -> None:
-    """One bahn-row + a Bahn.de-style 'Details ▾' link that reveals the chain."""
-    _render_bahn_row(plan, kind, latest_return_target)
-
-    # Details disclosure — rendered as a thin footer strip *inside* the card
-    # via CSS (article opens at bottom, the marker + button containers below
-    # carry matching side borders and the closing bottom-radius). Collapsed
-    # by default for both winner and alternative.
+    """One bahn-row + a Bahn.de-style 'Details ▾' link that reveals the
+    leg-by-leg itinerary (embedded in the card), warnings, and route map."""
+    # Read the expansion state BEFORE rendering the bahn-row so the legs
+    # can be embedded directly inside the same card when expanded.
     expanded_key = f"bahn_details_expanded_{kind}"
     expanded = st.session_state.get(expanded_key, False)
+
+    _render_bahn_row(plan, kind, latest_return_target, include_legs=expanded)
 
     # Marker carries `data-kind` so the alternative row can pick up its
     # gray accent rule on the footer strip via :has() selectors.
@@ -558,7 +633,6 @@ def _render_efficiency_row(
     fuel_consumption: float,
     fuel_price: float,
     fuel_refund_per_km: float,
-    latest_return_target: Optional[datetime],
 ) -> None:
     """One compact row + Details disclosure reusing _render_details."""
     overhead_str = _fmt_overhead(plan.overhead_duration)
@@ -603,7 +677,6 @@ def _render_efficiency_options(
     fuel_consumption: float,
     fuel_price: float,
     fuel_refund_per_km: float,
-    latest_return_target: Optional[datetime],
 ) -> None:
     if not options:
         return
@@ -613,9 +686,7 @@ def _render_efficiency_options(
     )
     for idx, plan in enumerate(options):
         _render_efficiency_row(
-            plan, idx,
-            fuel_consumption, fuel_price, fuel_refund_per_km,
-            latest_return_target,
+            plan, idx, fuel_consumption, fuel_price, fuel_refund_per_km,
         )
 
 
@@ -644,5 +715,4 @@ def render_result(result: OptimizationResult) -> None:
     _render_efficiency_options(
         result.efficiency_options,
         fuel_consumption, fuel_price, fuel_refund_per_km,
-        latest_return_target,
     )

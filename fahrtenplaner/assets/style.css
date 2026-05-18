@@ -1545,3 +1545,6 @@ code, pre, kbd {
 
 .eff-row__sep { opacity: 0.4; }
 
+/* Bahn-legs itinerary uses inline styles in render.py — placed there to
+   bypass Streamlit's markdown-HTML quirks that strip/break class-based
+   sibling selectors. No CSS rules needed here. */
