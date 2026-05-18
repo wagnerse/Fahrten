@@ -1494,56 +1494,28 @@ code, pre, kbd {
 }
 
 /* =========================================================================
- * Effort-ranked alternatives — compact rows under the winner/alternative
+ * Result eyebrow — section header above the Top-Routen stack, with a small
+ * hint chip explaining the ranking rule via title tooltip.
  * ========================================================================= */
 
-.eff-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: var(--surface);
-  margin-top: 0.5rem;
-}
-
-.eff-row__lead {
-  display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
-  min-width: 0;
-}
-
-.eff-row__overhead {
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  color: var(--ink);
-  white-space: nowrap;
-}
-
-.eff-row__label {
+.result-eyebrow__hint {
+  margin-left: auto;
   color: var(--ink-soft);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 0.74rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  cursor: help;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
 }
 
-.eff-row__meta {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  color: var(--ink-soft);
-  font-variant-numeric: tabular-nums;
+/* Sort-controls — make the segmented_control segments compact + dezent
+   above the result cards. */
+[data-testid="stHorizontalBlock"] [data-testid="stSegmentedControl"] button {
+  font-size: 0.8rem !important;
+  padding: 0.22rem 0.6rem !important;
 }
-
-.eff-row__net {
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.eff-row__sep { opacity: 0.4; }
 
 /* Bahn-legs itinerary uses inline styles in render.py — placed there to
    bypass Streamlit's markdown-HTML quirks that strip/break class-based

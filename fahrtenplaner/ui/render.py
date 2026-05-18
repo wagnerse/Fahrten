@@ -291,12 +291,14 @@ def _render_bahn_row(
 
     seg_html = _bahn_segments_html(_chain_segments(plan))
 
-    mode_word = "Auto" if plan.has_car_legs else "Transit"
-    mode_class = "bahn-mode--car" if plan.has_car_legs else "bahn-mode--transit"
-
+    # CSS classes share a single 'alternative' bucket regardless of rank
+    # index — the per-kind suffix on `kind` is only used to keep session-state
+    # keys unique across multiple ranked plans.
+    is_winner = kind == "winner"
+    css_kind = "winner" if is_winner else "alternative"
     rank_chip = (
         '<span class="bahn-rank bahn-rank--winner">Bester Plan</span>'
-        if kind == "winner"
+        if is_winner
         else '<span class="bahn-rank bahn-rank--alt">Alternative</span>'
     )
 
@@ -309,13 +311,10 @@ def _render_bahn_row(
     legs_html = _build_legs_html(plan) if include_legs else ""
 
     _html(f"""
-        <article class="bahn-row bahn-row--{kind}">
+        <article class="bahn-row bahn-row--{css_kind}">
           <div class="bahn-row__main">
             <div class="bahn-row__chips">
               {rank_chip}
-              <span class="bahn-mode {mode_class}">
-                <span class="bahn-mode__dot"></span>{mode_word}
-              </span>
               {sev_chip}
               <span class="bahn-row__chips-spacer"></span>
               {overshoot_html}
@@ -557,13 +556,6 @@ def _render_details(
     ):
         render_route_map(plan)
 
-    # Efficiency-option details: also embed the leg-by-leg itinerary here,
-    # because the bahn-row above is the compact .eff-row (no embedded legs).
-    # Winner/alternative already have legs attached to their bahn-row card.
-    if kind.startswith("eff_"):
-        _eyebrow("Tagesplan")
-        st.markdown(_build_legs_html(plan), unsafe_allow_html=True)
-
 
 def _render_plan_section(
     plan: DayPlan,
@@ -583,9 +575,11 @@ def _render_plan_section(
     _render_bahn_row(plan, kind, latest_return_target, include_legs=expanded)
 
     # Marker carries `data-kind` so the alternative row can pick up its
-    # gray accent rule on the footer strip via :has() selectors.
+    # gray accent rule on the footer strip via :has() selectors. Normalise
+    # the rank-suffix away so all non-winners share one class.
+    css_kind = "winner" if kind == "winner" else "alternative"
     st.markdown(
-        f'<div class="bahn-details-toggle" data-kind="{kind}" '
+        f'<div class="bahn-details-toggle" data-kind="{css_kind}" '
         f'data-open="{"1" if expanded else "0"}"></div>',
         unsafe_allow_html=True,
     )
@@ -605,114 +599,103 @@ def _render_plan_section(
 
 
 # --------------------------------------------------------------------------- #
-# Effort-ranked alternatives — compact list rendered under winner/alternative
-# --------------------------------------------------------------------------- #
-
-def _fmt_overhead(td: timedelta) -> str:
-    """4h13 / 45 min — shorter than _fmt_duration for the compact row."""
-    total_min = max(0, int(td.total_seconds() / 60))
-    h, m = divmod(total_min, 60)
-    if h == 0:
-        return f"{m} min"
-    return f"{h}h{m:02d}"
-
-
-def _short_route_label(plan: DayPlan) -> str:
-    """First tour number + 'Station → Station' across the whole chain."""
-    if not plan.tours:
-        return "—"
-    first = plan.tours[0]
-    last = plan.tours[-1]
-    nrs = " · ".join(str(t.tour_nr) for t in plan.tours)
-    return f"{nrs} — {first.departure_station} → {last.arrival_station}"
-
-
-def _render_efficiency_row(
-    plan: DayPlan,
-    idx: int,
-    fuel_consumption: float,
-    fuel_price: float,
-    fuel_refund_per_km: float,
-) -> None:
-    """One compact row + Details disclosure reusing _render_details."""
-    overhead_str = _fmt_overhead(plan.overhead_duration)
-    eur_per_h_str = (
-        f"{plan.euros_per_hour:.1f}".replace(".", ",") + " €/h"
-        if plan.overhead_duration.total_seconds() > 0 else "—"
-    )
-    net_str = _fmt_eur(plan.net_euros)
-    label = _short_route_label(plan)
-
-    _html(f"""
-        <article class="eff-row">
-          <div class="eff-row__lead">
-            <span class="eff-row__overhead">⏱ {overhead_str}</span>
-            <span class="eff-row__label">{label}</span>
-          </div>
-          <div class="eff-row__meta">
-            <span class="eff-row__net">{net_str}</span>
-            <span class="eff-row__sep">·</span>
-            <span class="eff-row__rate">{eur_per_h_str}</span>
-          </div>
-        </article>
-        """)
-
-    kind = f"eff_{idx}"
-    expanded_key = f"bahn_details_expanded_{kind}"
-    expanded = st.session_state.get(expanded_key, False)
-    chevron = "▴" if expanded else "▾"
-    if st.button(
-        f"Details {chevron}",
-        key=f"bahn_details_btn_{kind}",
-        use_container_width=True,
-    ):
-        st.session_state[expanded_key] = not expanded
-        st.rerun()
-    if expanded:
-        _render_details(plan, kind, fuel_consumption, fuel_price, fuel_refund_per_km)
-
-
-def _render_efficiency_options(
-    options: list[DayPlan],
-    fuel_consumption: float,
-    fuel_price: float,
-    fuel_refund_per_km: float,
-) -> None:
-    if not options:
-        return
-    _eyebrow(
-        "Weitere Optionen — nach Aufwand sortiert",
-        f'<span class="result-eyebrow__count">{len(options)} Optionen</span>',
-    )
-    for idx, plan in enumerate(options):
-        _render_efficiency_row(
-            plan, idx, fuel_consumption, fuel_price, fuel_refund_per_km,
-        )
-
-
-# --------------------------------------------------------------------------- #
 # Public entry point
 # --------------------------------------------------------------------------- #
 
 def render_result(result: OptimizationResult) -> None:
-    """Render winner row + (optional) alternative row + effort-ranked options."""
+    """Render the top-N day plans as a uniform stack of bahn-row cards.
+    Plan 0 gets the 'BESTER PLAN' label; the rest get 'ALTERNATIVE'.
+    Plans are ranked by balanced score (net minus overhead-hours penalty)."""
     fuel_consumption = float(st.session_state.get("fuel_consumption", 7.0))
     fuel_price = float(st.session_state.get("fuel_price", 2.00))
     fuel_refund_per_km = float(st.session_state.get("fuel_refund_per_km", 0.20))
     latest_return_target = result.latest_return_target
 
-    _render_plan_section(
-        result.winner, "winner",
-        fuel_consumption, fuel_price, fuel_refund_per_km, latest_return_target,
+    if not result.top_plans:
+        return
+
+    # Eyebrow with the default ranking-rule explanation as tooltip.
+    st.markdown(
+        '<div class="result-eyebrow">'
+        '<span class="result-eyebrow__label">Top-Routen</span>'
+        '<span class="result-eyebrow__hint" title="'
+        'Empfehlung sortiert nach Netto-Vergütung. Routen mit mehr als 6h '
+        'An- und Rückreisezeit werden pro zusätzlicher Stunde um 3 € '
+        'abgewertet, damit lange Tage nicht über kompakten Touren landen.'
+        '">ⓘ Wie wird sortiert?</span>'
+        '</div>',
+        unsafe_allow_html=True,
     )
 
-    if result.has_alternative:
+    sort_state = _render_sort_controls()
+    display_plans = _sort_top_plans(result.top_plans, sort_state)
+
+    # The "Bester Plan" label always points to the score-winner
+    # (top_plans[0]), no matter where it appears after a custom sort.
+    score_winner = result.top_plans[0]
+    for idx, plan in enumerate(display_plans):
+        is_winner = plan is score_winner
+        kind = "winner" if is_winner else f"alternative_{idx}"
         _render_plan_section(
-            result.alternative, "alternative",
+            plan, kind,
             fuel_consumption, fuel_price, fuel_refund_per_km, latest_return_target,
         )
 
-    _render_efficiency_options(
-        result.efficiency_options,
-        fuel_consumption, fuel_price, fuel_refund_per_km,
-    )
+
+def _render_sort_controls() -> Optional[tuple[str, str]]:
+    """Right-aligned compact sort controls: a criterion segmented-control
+    paired with an asc/desc segmented-control. Returns (criterion, direction)
+    or None when 'Empfehlung' is selected."""
+    # Left half is empty (spacer) so the controls land on the right.
+    _, control = st.columns([1, 1])
+    with control:
+        col_crit, col_dir = st.columns([4, 1])
+        with col_crit:
+            crit = st.segmented_control(
+                "Sortieren",
+                options=["Empfehlung", "Startzeit", "Dauer", "Verdienst"],
+                default="Empfehlung",
+                label_visibility="collapsed",
+                key="result_sort_crit",
+            )
+        with col_dir:
+            arrow = st.segmented_control(
+                "Richtung",
+                options=["↑", "↓"],
+                default="↑",
+                label_visibility="collapsed",
+                key="result_sort_dir",
+                disabled=(crit == "Empfehlung"),
+            )
+
+    if crit == "Empfehlung" or crit is None:
+        return None
+    direction = "desc" if arrow == "↓" else "asc"
+    return (crit, direction)
+
+
+def _sort_top_plans(
+    plans: list[DayPlan],
+    state: Optional[tuple[str, str]],
+) -> list[DayPlan]:
+    """Re-order the plans for display. None keeps the score-based order."""
+    if state is None:
+        return plans
+    criterion, direction = state
+    reverse = direction == "desc"
+
+    if criterion == "Startzeit":
+        return sorted(
+            plans, key=lambda p: _chain_start_dt(p) or datetime.max,
+            reverse=reverse,
+        )
+    if criterion == "Dauer":
+        def _total_min(p: DayPlan) -> int:
+            start, end = _chain_start_dt(p), _chain_end_dt(p)
+            if start is None or end is None:
+                return 24 * 60
+            return int((end - start).total_seconds() / 60)
+        return sorted(plans, key=_total_min, reverse=reverse)
+    if criterion == "Verdienst":
+        return sorted(plans, key=lambda p: p.net_euros, reverse=reverse)
+    return plans

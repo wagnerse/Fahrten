@@ -695,8 +695,8 @@ class TestScaleBeyond20Tours:
         tours[22] = make_tour(1022, "20:40", "X", "21:10", "X", euros=70.0)  # idx 22
 
         # All reachable from home (same station), all can return
-        home_to_tour = {i: EMPTY_CONN for i in range(25)}
-        tour_to_dest = {i: EMPTY_CONN for i in range(25)}
+        home_to_tour = dict.fromkeys(range(25), EMPTY_CONN)
+        tour_to_dest = dict.fromkeys(range(25), EMPTY_CONN)
 
         plan = run_optimizer(
             tours,
@@ -991,11 +991,11 @@ class TestDayPlanMetrics:
         tour = make_tour(1, "06:00", "A", "08:00", "A", 10.0)
         plan = DayPlan()
         plan.chain.append(ChainLink(type="tour", tour=tour))
-        assert plan.euros_per_hour == 0.0
+        assert plan.euros_per_hour == pytest.approx(0.0, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
-# Effort-ranked alternatives — _build_efficiency_options
+# Effort-ranked alternatives — _build_top_plans
 # ---------------------------------------------------------------------------
 
 def _single_tour_plan(
@@ -1033,90 +1033,91 @@ def _single_tour_plan(
     return plan
 
 
-class TestEfficiencyOptions:
-    """_build_efficiency_options: filter → dedupe → exclude → sort → truncate."""
+class TestTopPlans:
+    """_build_top_plans: dedupe + filter + score-sort (net minus overhead penalty)."""
 
-    def test_returns_top_5_sorted_ascending_by_overhead(self):
-        from optimizer import _build_efficiency_options
+    def test_returns_top_5_sorted_by_score_desc(self):
+        from optimizer import _build_top_plans
 
-        # 7 candidates with increasing overhead. Top 5 expected, in order.
+        # 7 candidates, all 60min overhead (1h < 6h threshold → no penalty).
+        # Score == net. Net 30..36, top 5 are 36,35,34,33,32.
         candidates = [
             _single_tour_plan(100 + i, "A", "08:00", "B", "09:00",
-                              euros=30.0,
-                              outbound_min=10 + i * 10, inbound_min=10)
+                              euros=30.0 + i, outbound_min=30, inbound_min=30)
             for i in range(7)
         ]
-        result = _build_efficiency_options(candidates, excluded=[])
+        result = _build_top_plans(candidates)
         assert len(result) == 5
-        overheads = [p.overhead_duration for p in result]
-        assert overheads == sorted(overheads)
+        assert [p.tours[0].tour_nr for p in result] == [106, 105, 104, 103, 102]
 
-    def test_excludes_winner_and_alternative(self):
-        from optimizer import _build_efficiency_options
+    def test_demotes_long_overhead_plans(self):
+        """High-net plan with > 6h overhead loses score, ranks behind a lower-
+        net plan with short overhead."""
+        from optimizer import _build_top_plans
 
-        winner = _single_tour_plan(200, "A", "08:00", "B", "09:00",
-                                    euros=40.0, outbound_min=30, inbound_min=30)
-        alt    = _single_tour_plan(201, "A", "10:00", "B", "11:00",
-                                    euros=35.0, outbound_min=40, inbound_min=40)
-        other  = _single_tour_plan(202, "A", "12:00", "B", "13:00",
-                                    euros=30.0, outbound_min=20, inbound_min=20)
-
-        result = _build_efficiency_options(
-            [winner, alt, other], excluded=[winner, alt],
+        # 44 € / 16h overhead → 44 − 3*(16−6) = 14
+        marathon = _single_tour_plan(
+            200, "A", "10:00", "B", "12:00",
+            euros=44.0, outbound_min=8 * 60, inbound_min=8 * 60,
         )
-        tour_nrs = [p.tours[0].tour_nr for p in result]
-        assert tour_nrs == [202]
+        # 40 € / 7h overhead → 40 − 3*(7−6) = 37
+        compact = _single_tour_plan(
+            201, "A", "10:00", "B", "12:00",
+            euros=40.0, outbound_min=3 * 60 + 30, inbound_min=3 * 60 + 30,
+        )
+        result = _build_top_plans([marathon, compact])
+        assert [p.tours[0].tour_nr for p in result] == [201, 200]
 
     def test_deduplicates_identical_tour_sequences(self):
-        from optimizer import _build_efficiency_options
+        from optimizer import _build_top_plans
 
-        # Same tour number, same has_car_legs flag → collapsed.
         a = _single_tour_plan(300, "A", "08:00", "B", "09:00",
                               euros=30.0, outbound_min=30, inbound_min=30)
         b = _single_tour_plan(300, "A", "08:00", "B", "09:00",
-                              euros=30.0, outbound_min=45, inbound_min=45)  # different overhead
-        result = _build_efficiency_options([a, b], excluded=[])
+                              euros=30.0, outbound_min=45, inbound_min=45)
+        result = _build_top_plans([a, b])
         assert len(result) == 1
-        # First-seen wins (the 60-min total overhead one)
-        assert result[0].overhead_duration == timedelta(minutes=60)
 
     def test_drops_plans_below_min_net_euros(self):
-        from optimizer import _build_efficiency_options, EFFICIENCY_MIN_NET_EUROS
+        from optimizer import _build_top_plans, EFFICIENCY_MIN_NET_EUROS
 
-        assert EFFICIENCY_MIN_NET_EUROS == 10.0  # guard against silent re-tuning
+        assert EFFICIENCY_MIN_NET_EUROS == pytest.approx(10.0)
 
         tiny = _single_tour_plan(400, "A", "08:00", "B", "09:00",
                                  euros=5.0, outbound_min=5, inbound_min=5)
-        big  = _single_tour_plan(401, "A", "10:00", "B", "11:00",
-                                 euros=40.0, outbound_min=60, inbound_min=60)
-        result = _build_efficiency_options([tiny, big], excluded=[])
-        tour_nrs = [p.tours[0].tour_nr for p in result]
-        assert tour_nrs == [401]
+        big = _single_tour_plan(401, "A", "10:00", "B", "11:00",
+                                euros=40.0, outbound_min=60, inbound_min=60)
+        result = _build_top_plans([tiny, big])
+        assert [p.tours[0].tour_nr for p in result] == [401]
 
     def test_empty_list_when_no_candidates(self):
-        from optimizer import _build_efficiency_options
-        assert _build_efficiency_options([], excluded=[]) == []
+        from optimizer import _build_top_plans
+        assert _build_top_plans([]) == []
 
-    def test_optimize_with_modes_populates_efficiency_options(self):
-        """End-to-end: optimize_with_modes returns alternatives in efficiency_options."""
+    def test_optimize_with_modes_populates_top_plans(self):
+        """End-to-end: optimize_with_modes returns top_plans ranked by score
+        and exposes them via the winner/alternative/efficiency_options views."""
         from optimizer import optimize_with_modes
 
-        # Three single-tour candidates from transit mode; winner is the highest
-        # net_euros, the other two should appear in efficiency_options sorted
-        # by overhead ascending.
-        winner_plan = _single_tour_plan(500, "A", "08:00", "B", "09:00",
-                                         euros=50.0, outbound_min=120, inbound_min=120)
-        cheap_plan  = _single_tour_plan(501, "A", "10:00", "B", "11:00",
-                                         euros=40.0, outbound_min=20, inbound_min=20)
-        mid_plan    = _single_tour_plan(502, "A", "12:00", "B", "13:00",
-                                         euros=30.0, outbound_min=60, inbound_min=60)
+        marathon = _single_tour_plan(
+            500, "A", "10:00", "B", "12:00",
+            euros=44.0, outbound_min=8 * 60, inbound_min=8 * 60,
+        )
+        compact_a = _single_tour_plan(
+            501, "A", "10:00", "B", "11:00",
+            euros=45.0, outbound_min=30, inbound_min=30,
+        )
+        compact_b = _single_tour_plan(
+            502, "A", "12:00", "B", "13:00",
+            euros=30.0, outbound_min=60, inbound_min=60,
+        )
 
         with patch("optimizer.optimize_day",
-                   return_value=(winner_plan, [winner_plan, cheap_plan, mid_plan], set())), \
+                   return_value=(marathon, [marathon, compact_a, compact_b], set())), \
              patch("optimizer.stations_match", return_value=False):
             result = optimize_with_modes(
                 tours=[],
-                home_station="Prenzlau", dest_station="Stralsund",  # ≠ → no car mode
+                home_station="Prenzlau", dest_station="Stralsund",
                 earliest_departure=datetime.combine(DAY, time(4, 0)),
                 latest_return=datetime.combine(DAY, time(23, 59)),
                 max_car_minutes=0,
@@ -1124,10 +1125,12 @@ class TestEfficiencyOptions:
                 fuel_price=1.79,
             )
 
-        assert result.winner.tours[0].tour_nr == 500
-        # cheap_plan has 40 min overhead, mid_plan has 120 min — cheap first
-        nrs = [p.tours[0].tour_nr for p in result.efficiency_options]
-        assert nrs == [501, 502]
+        nrs = [p.tours[0].tour_nr for p in result.top_plans]
+        assert nrs == [501, 502, 500]
+        # Backward-compat views agree with top_plans
+        assert result.winner.tours[0].tour_nr == 501
+        assert result.alternative.tours[0].tour_nr == 502
+        assert [p.tours[0].tour_nr for p in result.efficiency_options] == [500]
 
 
 # ---------------------------------------------------------------------------

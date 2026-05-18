@@ -218,10 +218,14 @@ class DayPlan:
 
 @dataclass
 class OptimizationResult:
-    """A primary plan + an optional alternative for side-by-side comparison."""
+    """Up to N day-plans, ranked by balanced score (net revenue with soft
+    overhead penalty). `top_plans[0]` is the recommendation; the rest are
+    alternatives shown in equal cards. `winner`/`alternative`/`efficiency_options`
+    are kept as backward-compat views into `top_plans`."""
     winner: DayPlan
     alternative: Optional["DayPlan"] = None
     efficiency_options: list["DayPlan"] = field(default_factory=list)
+    top_plans: list["DayPlan"] = field(default_factory=list)
     latest_return_target: Optional[datetime] = None  # user's preferred return time
 
     @property
